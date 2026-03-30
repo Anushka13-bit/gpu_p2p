@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import time
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 import requests
 
@@ -37,8 +37,19 @@ class TrackerClient:
         self.timeout = timeout
         self.session = requests.Session()
 
-    def register(self, gpu_vram_mb: float, cpu_count: int, host_label: str | None = None) -> RegisterResponse:
-        body = RegisterRequest(gpu_vram_mb=gpu_vram_mb, cpu_count=cpu_count, host_label=host_label)
+    def register(
+        self,
+        gpu_vram_mb: float,
+        cpu_count: int,
+        host_label: str | None = None,
+        hardware_report: Mapping[str, Any] | None = None,
+    ) -> RegisterResponse:
+        body = RegisterRequest(
+            gpu_vram_mb=gpu_vram_mb,
+            cpu_count=cpu_count,
+            host_label=host_label,
+            hardware_report=dict(hardware_report) if hardware_report is not None else None,
+        )
         r = self.session.post(
             f"{self.base_url}/register",
             json=body.model_dump(),

@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from shared.protocol import TaskAssignment, TaskResponse, TaskStatus
 
@@ -18,7 +18,9 @@ from .state_manager import StateManager
 TOTAL_IMAGES = 10_000
 NUM_SHARDS = 5
 SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
-HEARTBEAT_TIMEOUT_SEC = 15.0
+# Must exceed worker heartbeat interval (default 30s) so brief jitter does not orphan tasks.
+HEARTBEAT_TIMEOUT_SEC = 90.0
+REGISTRY_DISPLAY_INTERVAL_SEC = 30.0
 
 
 def _shard_bounds(idx: int) -> Tuple[int, int]:
@@ -50,7 +52,9 @@ class WorkerRecord:
     gpu_vram_mb: float
     cpu_count: int
     host_label: Optional[str] = None
+    hardware_report: Optional[dict[str, Any]] = None
     registered_at: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.time)
 
 
 class Scheduler:
@@ -78,15 +82,25 @@ class Scheduler:
                     orphaned.append(tid)
         return orphaned
 
-    def register_worker(self, gpu_vram_mb: float, cpu_count: int, host_label: Optional[str]) -> str:
+    def register_worker(
+        self,
+        gpu_vram_mb: float,
+        cpu_count: int,
+        host_label: Optional[str],
+        hardware_report: Optional[dict[str, Any]] = None,
+    ) -> str:
         self.check_timeouts()
         wid = str(uuid.uuid4())
         with self._lock:
+            now = time.time()
             self._workers[wid] = WorkerRecord(
                 worker_id=wid,
                 gpu_vram_mb=gpu_vram_mb,
                 cpu_count=cpu_count,
                 host_label=host_label,
+                hardware_report=hardware_report,
+                registered_at=now,
+                last_seen=now,
             )
         return wid
 
@@ -96,6 +110,7 @@ class Scheduler:
         with self._lock:
             if worker_id not in self._workers:
                 return False
+            self._workers[worker_id].last_seen = now
             if task_id:
                 t = self._tasks.get(task_id)
                 if (
@@ -198,6 +213,7 @@ class Scheduler:
             buffers = self._state.collect_shard_weights_for_fedavg(sorted(self._tasks.keys()))
         except ValueError as e:
             return False, str(e)
+        nbuf = len(buffers)
         merged = fedavg_state_dicts(buffers)
         next_round = self._state.global_round() + 1
         self._state.set_global_bytes(merged, next_round)
@@ -209,7 +225,90 @@ class Scheduler:
         self._state.reset_task_checkpoints(list(self._tasks.keys()))
 
         label = self._state.global_version_label()
+        print(
+            f"[fedavg] averaged {nbuf} shard weight tensors (element-wise mean of float params) → {label}",
+            flush=True,
+        )
         return True, f"aggregated to {label}"
+
+    def worker_current_shard(self, worker_id: str) -> Optional[str]:
+        with self._lock:
+            for tid, t in self._tasks.items():
+                if t.assigned_worker == worker_id and t.status in (
+                    TaskStatus.ASSIGNED,
+                    TaskStatus.IN_PROGRESS,
+                ):
+                    return tid
+            return None
+
+    def _current_shard_locked(self, worker_id: str) -> Optional[str]:
+        for tid, t in self._tasks.items():
+            if t.assigned_worker == worker_id and t.status in (
+                TaskStatus.ASSIGNED,
+                TaskStatus.IN_PROGRESS,
+            ):
+                return tid
+        return None
+
+    def registry_snapshot(self, now: Optional[float] = None) -> dict[str, Any]:
+        """Counts and rows for terminal / API; active = heartbeat within timeout."""
+        now = now or time.time()
+        self.check_timeouts()
+        with self._lock:
+            rows: list[dict[str, Any]] = []
+            active = 0
+            for w in self._workers.values():
+                age = now - w.last_seen
+                is_live = age <= HEARTBEAT_TIMEOUT_SEC
+                if is_live:
+                    active += 1
+                shard = self._current_shard_locked(w.worker_id)
+                rows.append(
+                    {
+                        "worker_id": w.worker_id,
+                        "host_label": w.host_label,
+                        "registered_at": w.registered_at,
+                        "last_seen_age_sec": round(age, 1),
+                        "alive": is_live,
+                        "current_shard": shard,
+                    }
+                )
+            rows.sort(key=lambda r: r["registered_at"])
+            on_task = sum(1 for r in rows if r["current_shard"] is not None)
+            return {
+                "total_nodes": len(self._workers),
+                "active_nodes": active,
+                "nodes_on_shard": on_task,
+                "heartbeat_timeout_sec": HEARTBEAT_TIMEOUT_SEC,
+                "nodes": rows,
+                "task_table": {
+                    tid: {"status": t.status.value, "worker": t.assigned_worker}
+                    for tid, t in self._tasks.items()
+                },
+            }
+
+    def format_registry_terminal(self, now: Optional[float] = None) -> str:
+        snap = self.registry_snapshot(now)
+        lines = [
+            "",
+            f"——— node registry @ {time.strftime('%H:%M:%S')} ———",
+            f"  total_nodes={snap['total_nodes']}  active_nodes(≤{snap['heartbeat_timeout_sec']:.0f}s since heartbeat)={snap['active_nodes']}  "
+            f"nodes_with_assigned_shard={snap['nodes_on_shard']}",
+            f"  data: {TOTAL_IMAGES} MNIST indices → {NUM_SHARDS} shards × {SHARD_SIZE} rows (distinct workers take distinct pending shards)",
+        ]
+        for r in snap["nodes"]:
+            shard = r["current_shard"] or "—"
+            lbl = repr(r["host_label"])[1:-1] if r["host_label"] else "—"
+            alive = "alive" if r["alive"] else "STALE"
+            short_id = r["worker_id"][:8]
+            lines.append(
+                f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  shard={shard}"
+            )
+        lines.append("  shard summary:")
+        for tid, info in snap["task_table"].items():
+            lines.append(f"    {tid}: {info['status']}  worker={info['worker'] or '—'}")
+        lines.append("———" * 10)
+        return "\n".join(lines)
 
     def health_snapshot(self) -> dict:
         self.check_timeouts()
@@ -228,4 +327,27 @@ class Scheduler:
                 for tid, t in self._tasks.items()
             }
             base = self._state.snapshot()
-            return {"workers": len(self._workers), "task_table": tasks, **base}
+            roster = [
+                {
+                    "worker_id": w.worker_id,
+                    "gpu_vram_mb": w.gpu_vram_mb,
+                    "cpu_count": w.cpu_count,
+                    "host_label": w.host_label,
+                    "registered_at": w.registered_at,
+                    "last_seen_age_sec": round(now - w.last_seen, 3),
+                    "hardware_report": w.hardware_report,
+                }
+                for w in self._workers.values()
+            ]
+            reg = {
+                "total_nodes": len(self._workers),
+                "active_nodes": sum(1 for w in self._workers.values() if (now - w.last_seen) <= HEARTBEAT_TIMEOUT_SEC),
+                "heartbeat_timeout_sec": HEARTBEAT_TIMEOUT_SEC,
+            }
+            return {
+                "workers": len(self._workers),
+                "worker_roster": roster,
+                "node_registry": reg,
+                "task_table": tasks,
+                **base,
+            }

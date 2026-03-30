@@ -6,6 +6,7 @@ Run from repo root: PYTHONPATH=. uvicorn tracker.app:app --host 0.0.0.0 --port 8
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -23,7 +24,7 @@ from shared.protocol import (
     TaskResponse,
 )
 
-from .scheduler import HEARTBEAT_TIMEOUT_SEC, Scheduler
+from .scheduler import REGISTRY_DISPLAY_INTERVAL_SEC, Scheduler
 from .state_manager import StateManager
 
 state_manager = StateManager()
@@ -32,14 +33,24 @@ scheduler = Scheduler(state_manager)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async def _watchdog():
+    async def _registry_supervisor():
         while True:
-            await asyncio.sleep(max(2.0, HEARTBEAT_TIMEOUT_SEC / 3))
+            await asyncio.sleep(REGISTRY_DISPLAY_INTERVAL_SEC)
             orphaned = scheduler.check_timeouts()
             if orphaned:
-                print(f"[watchdog] orphaned tasks: {orphaned}")
+                print(
+                    f"[watchdog] reassigned/orphaned (assigned shard had no heartbeat in time): {orphaned}",
+                    flush=True,
+                )
+            print(scheduler.format_registry_terminal(), flush=True)
 
-    task = asyncio.create_task(_watchdog())
+    task = asyncio.create_task(_registry_supervisor())
+    print(
+        f"[tracker] supervisor: registry + watchdog every {REGISTRY_DISPLAY_INTERVAL_SEC:.0f}s "
+        f"(see scheduler.HEARTBEAT_TIMEOUT_SEC for liveness window)",
+        flush=True,
+    )
+    print(scheduler.format_registry_terminal(), flush=True)
     try:
         yield
     finally:
@@ -59,7 +70,15 @@ async def register(body: RegisterRequest) -> RegisterResponse:
         gpu_vram_mb=body.gpu_vram_mb,
         cpu_count=body.cpu_count,
         host_label=body.host_label,
+        hardware_report=body.hardware_report,
     )
+    print(
+        f"[register] worker_id={wid} gpu_vram_mb={body.gpu_vram_mb} "
+        f"cpu_count={body.cpu_count} host_label={body.host_label!r}",
+        flush=True,
+    )
+    if body.hardware_report:
+        print(json.dumps(body.hardware_report, indent=2, default=str), flush=True)
     return RegisterResponse(worker_id=wid, message="registered")
 
 

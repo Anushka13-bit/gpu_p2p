@@ -20,6 +20,10 @@ class RegisterRequest(BaseModel):
     gpu_vram_mb: float = Field(..., ge=0, description="Total GPU VRAM in MB (0 if CPU-only mock)")
     cpu_count: int = Field(..., ge=1)
     host_label: Optional[str] = None
+    hardware_report: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Optional JSON from shared.hardware_sniff.build_hardware_report (full client specs).",
+    )
 
 
 class RegisterResponse(BaseModel):

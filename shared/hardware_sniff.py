@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Optional
 
 
 def _sysctl_n(name: str) -> Optional[str]:
@@ -180,3 +180,8 @@ def sniff_register_tuple() -> tuple[float, int]:
     """(gpu_vram_mb, cpu_count) for POST /register — matches build_hardware_report semantics."""
     r = build_hardware_report()
     return float(r.effective_register_gpu_vram_mb), int(r.cpu_count)
+
+
+def hardware_report_for_register() -> dict[str, Any]:
+    """JSON-serializable dict for POST /register ``hardware_report`` (any OS)."""
+    return asdict(build_hardware_report())

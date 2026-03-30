@@ -14,7 +14,7 @@ Use `--max-fed-rounds 0` for unlimited rounds.
 Simulate death mid-shard (orphan → reassignment):
   PYTHONPATH=. python mock_worker.py --tracker http://127.0.0.1:8000 --die-after-first-round
 
-Round 2: start another worker (or the same binary) to pick up ORPHANED shards after ~15s.
+Round 2: start another worker (or the same binary) to pick up ORPHANED shards if a shard assignee stops heartbeating (see scheduler.HEARTBEAT_TIMEOUT_SEC).
 """
 
 from __future__ import annotations
@@ -23,8 +23,11 @@ import argparse
 import base64
 import threading
 import time
+from typing import Optional
+
 import torch
 
+from shared.hardware_sniff import hardware_report_for_register
 from shared.models import SmallCNN, apply_state_dict
 from worker.client import TrackerClient, sniff_hardware_defaults
 from worker.train_utils import build_mnist_base_10k, train_shard_batch_loop
@@ -34,6 +37,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tracker", default="http://127.0.0.1:8000")
     parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument(
+        "--heartbeat-sec",
+        type=float,
+        default=30.0,
+        help="POST /heartbeat interval while running (tracker timeout must be larger).",
+    )
+    parser.add_argument(
+        "--host-label",
+        default="mock-worker",
+        help="Shown in tracker registry / register payload.",
+    )
+    parser.add_argument("--quiet-training", action="store_true", help="Less worker-side training log.")
     parser.add_argument("--die-after-first-round", action="store_true")
     parser.add_argument(
         "--max-fed-rounds",
@@ -45,7 +60,12 @@ def main() -> None:
 
     client = TrackerClient(args.tracker)
     vram, cpus = sniff_hardware_defaults()
-    reg = client.register(gpu_vram_mb=vram, cpu_count=cpus, host_label="mock-worker")
+    reg = client.register(
+        gpu_vram_mb=vram,
+        cpu_count=cpus,
+        host_label=args.host_label,
+        hardware_report=hardware_report_for_register(),
+    )
     worker_id = reg.worker_id
     print(f"registered worker_id={worker_id}", flush=True)
 
@@ -61,7 +81,7 @@ def main() -> None:
                 client.heartbeat(worker_id, tid)
             except Exception as e:
                 print(f"heartbeat error: {e}", flush=True)
-            stop.wait(5)
+            stop.wait(args.heartbeat_sec)
 
     hb_thread = threading.Thread(target=hb_loop, daemon=True)
     hb_thread.start()
@@ -85,6 +105,10 @@ def main() -> None:
 
             resume_next = assign.resume_next_index
             submitted_once = False
+            log_prefix = (
+                f"[{args.host_label}] fed_round={assign.round_no} task={assign.task_id} "
+                f"rows[{assign.image_start},{assign.image_end})"
+            )
 
             while True:
                 if args.die_after_first_round and submitted_once:
@@ -100,6 +124,8 @@ def main() -> None:
                     resume_next,
                     device,
                     max_steps=args.steps,
+                    verbose=not args.quiet_training,
+                    log_prefix=log_prefix,
                 )
 
                 resp = client.submit_weights(

@@ -11,6 +11,35 @@ from torch.utils.data import Subset
 from torchvision import transforms
 from torchvision.datasets import MNIST
 
+
+@torch.no_grad()
+def eval_accuracy_on_range(
+    model: nn.Module,
+    base_10k: Subset,
+    image_start: int,
+    image_end: int,
+    device: torch.device,
+    batch_size: int = 256,
+) -> float:
+    """Accuracy % on MNIST subset indices [image_start, image_end)."""
+    model.eval()
+    indices = list(range(image_start, image_end))
+    if not indices:
+        model.train()
+        return 0.0
+    correct = 0
+    total = 0
+    for i in range(0, len(indices), batch_size):
+        chunk = indices[i : i + batch_size]
+        xs = torch.stack([base_10k[j][0] for j in chunk]).to(device)
+        ys = torch.stack([torch.tensor(base_10k[j][1], device=device) for j in chunk])
+        pred = model(xs).argmax(dim=1)
+        correct += int((pred == ys).sum().item())
+        total += len(chunk)
+    model.train()
+    return 100.0 * correct / max(1, total)
+
+
 def build_mnist_base_10k(root: str = "./data") -> Subset:
     tfm = transforms.ToTensor()
     raw = MNIST(root=root, train=True, download=True, transform=tfm)
@@ -28,9 +57,12 @@ def train_shard_batch_loop(
     max_steps: int,
     batch_size: int = 64,
     lr: float = 1e-3,
+    verbose: bool = False,
+    log_prefix: str = "",
 ) -> Tuple[bytes, int, int, bool]:
     """
     Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute 0..10k).
+    FL has no global epoch: we log local mini-batch steps and shard-wide eval accuracy.
     Returns (weights_bytes, last_consumed_index, batches_run, shard_complete).
     """
     resume_next_index = max(image_start, min(resume_next_index, image_end - 1))
@@ -46,6 +78,15 @@ def train_shard_batch_loop(
 
     steps_run = 0
     last_consumed = resume_next_index - 1
+    running_correct = 0
+    running_total = 0
+    planned_batches = (len(idx_map) + batch_size - 1) // batch_size
+    if verbose:
+        print(
+            f"{log_prefix} slice [{resume_next_index},{image_end})  "
+            f"batches_this_call≤{min(max_steps, planned_batches)}/{planned_batches} (batch_size={batch_size})",
+            flush=True,
+        )
 
     for i in range(0, len(idx_map), batch_size):
         if steps_run >= max_steps:
@@ -59,8 +100,26 @@ def train_shard_batch_loop(
         optimizer.step()
         steps_run += 1
         last_consumed = chunk[-1]
+        with torch.no_grad():
+            pred = model(xs).argmax(dim=1)
+            running_correct += int((pred == ys).sum().item())
+            running_total += len(chunk)
+        if verbose:
+            ra = 100.0 * running_correct / max(1, running_total)
+            print(
+                f"{log_prefix}  step {steps_run}/{min(max_steps, planned_batches)}  "
+                f"loss={loss.item():.4f}  running_train_acc={ra:.2f}%",
+                flush=True,
+            )
 
     shard_complete = last_consumed >= (image_end - 1)
+    if verbose:
+        acc = eval_accuracy_on_range(model, base_10k, image_start, image_end, device)
+        print(
+            f"{log_prefix} shard eval [{image_start},{image_end}): {acc:.2f}%  "
+            f"shard_complete={shard_complete}",
+            flush=True,
+        )
     out = io.BytesIO()
     torch.save(model.state_dict(), out)
     return out.getvalue(), last_consumed, steps_run, shard_complete
