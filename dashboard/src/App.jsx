@@ -248,17 +248,6 @@ export default function App() {
               badge="Tasks"
             />
 
-            {/* Fed round — round_no comes from /health HealthResponse */}
-            <StatCard
-              loading={!online}
-              icon={Icon.round}
-              label="Fed Round"
-              value={online ? `v${snapshot.round_no}` : null}
-              sub={online ? snapshot.version_label : null}
-              accent="#f59e0b"
-              badge="FedAvg"
-            />
-
             {/* Best val acc — set by scheduler after FedAvg; null until first round */}
             <StatCard
               loading={!online}
@@ -270,19 +259,6 @@ export default function App() {
                 : null}
               accent="#6366f1"
               badge="Global"
-            />
-
-            {/* Overall training progress — mean of shard progress_pct */}
-            <StatCard
-              loading={!online}
-              icon={Icon.chart}
-              label="Overall Progress"
-              value={online ? fmtPct(overallPct) : null}
-              sub={online && totalShards > 0
-                ? `Across ${totalShards} shards`
-                : null}
-              accent="#ec4899"
-              badge="Training"
             />
 
             {/* Last FedAvg metrics (val + test acc) — from state_manager snapshot */}
@@ -326,7 +302,7 @@ export default function App() {
             </SectionCard>
           </div>
 
-          {/* ── Charts row 2: Active Nodes + Fed Round ── */}
+          {/* ── Charts row 2: Active Nodes ── */}
           <div className="charts-row two-col">
             <SectionCard
               title="Active Nodes over Time"
@@ -336,17 +312,6 @@ export default function App() {
             >
               {online && metricHistory.length > 0
                 ? <ActiveNodesChart data={metricHistory} />
-                : <OfflinePlaceholder />}
-            </SectionCard>
-
-            <SectionCard
-              title="Fed Round Progression"
-              subtitle="Global aggregation round increments after FedAvg"
-              icon={Icon.round}
-              accent="#f59e0b"
-            >
-              {online && metricHistory.length > 0
-                ? <RoundsChart data={metricHistory} />
                 : <OfflinePlaceholder />}
             </SectionCard>
           </div>
