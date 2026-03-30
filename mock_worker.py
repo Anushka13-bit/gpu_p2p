@@ -31,7 +31,7 @@ import torch
 from shared.hardware_sniff import hardware_report_for_register
 from shared.models import SmallCNN, apply_state_dict
 from worker.client import TrackerClient, sniff_hardware_defaults
-from worker.train_utils import build_dataset_base_10k, train_shard_batch_loop
+from worker.train_utils import build_dataset_base, train_shard_batch_loop
 
 
 def main() -> None:
@@ -42,7 +42,7 @@ def main() -> None:
         default="fashion_mnist_csv",
         help="Dataset to train on (fashion_mnist_csv, fashion_mnist, mnist).",
     )
-    # One shard is 2000 samples; at batch_size=64 that's ~32 batches/epoch.
+    # With 70k images / 10 shards, one shard is 7k samples; at batch_size=64 that's ~110 batches/epoch.
     # For 15 epochs, you want >= 480 batches; default gives a bit of slack.
     parser.add_argument("--steps", type=int, default=600)
     parser.add_argument(
@@ -87,7 +87,7 @@ def main() -> None:
     print(f"registered worker_id={worker_id}", flush=True)
     client.log_event(worker_id, f"registered gpu_vram_mb={vram} cpu_count={cpus}", host_label=args.host_label)
 
-    base = build_dataset_base_10k(dataset=args.dataset, root="./data")
+    base = build_dataset_base(dataset=args.dataset, root="./data")
     device = torch.device("cpu")
     task_holder: dict[str, Optional[str]] = {"id": None}
     stop = threading.Event()
