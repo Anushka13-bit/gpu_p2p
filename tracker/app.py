@@ -140,7 +140,7 @@ async def submit_weights(
     weights_bytes = await weights_file.read()
     if not weights_bytes:
         raise HTTPException(status_code=400, detail="empty weights buffer")
-    ok, msg = scheduler.submit_weights(
+    ok, msg, credit_extras = scheduler.submit_weights(
         meta.worker_id,
         meta.task_id,
         weights_bytes,
@@ -149,6 +149,8 @@ async def submit_weights(
         shard_eval_acc=meta.shard_eval_acc,
         local_epochs_planned=meta.local_epochs_planned,
         local_epochs_completed=meta.local_epochs_completed,
+        steps_completed=meta.steps_completed,
+        train_acc_running=meta.train_acc_running,
     )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
@@ -177,6 +179,7 @@ async def submit_weights(
         "stop_reason": hs.get("stop_reason"),
         "best_val_acc": hs.get("best_val_acc"),
     }
+    body.update({k: v for k, v in credit_extras.items() if v is not None})
     if broadcast:
         body["aggregation"] = broadcast
     return JSONResponse(body)
@@ -200,6 +203,20 @@ async def reset_session(body: ResetSessionRequest) -> JSONResponse:
 async def registry() -> JSONResponse:
     """Node registry snapshot for dashboards."""
     return JSONResponse(scheduler.registry_snapshot())
+
+
+@app.get("/credits")
+async def credits_overview() -> JSONResponse:
+    """
+    Proof-of-Learning credit leaderboard + recent credit events (same data nested under
+    ``/health`` and ``/registry`` as ``learning_credits``).
+    """
+    return JSONResponse(scheduler.credit_snapshot())
+
+
+@app.get("/credits/leaderboard")
+async def credits_leaderboard() -> JSONResponse:
+    return JSONResponse({"leaderboard": scheduler.credit_snapshot()["leaderboard"]})
 
 
 @app.get("/global_model")

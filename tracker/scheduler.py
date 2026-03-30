@@ -13,18 +13,13 @@ from shared.protocol import TaskAssignment, TaskResponse, TaskStatus
 
 from .aggregator import fedavg_state_dicts
 from .eval_utils import eval_global_fashion_mnist_test_acc, eval_global_fashion_mnist_val_acc
+from . import learning_credits
 from .state_manager import StateManager
 
 
 TOTAL_IMAGES = 10_000
 NUM_SHARDS = 5
 SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
-# Must exceed worker heartbeat interval (default 3s) so brief jitter does not orphan tasks.
-# On some machines (esp. Windows + CPU-bound torch) the heartbeat thread can be delayed;
-# a wider window avoids false ORPHANED tasks during training.
-HEARTBEAT_TIMEOUT_SEC = 60.0
-REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
-WATCHDOG_CHECK_INTERVAL_SEC = 3.0
 
 
 def _env_int(name: str, default: int) -> int:
@@ -45,6 +40,22 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+# If a shard assignee stops heartbeating, ORPHANED after this many seconds (then another worker
+# can pick it up). Must be > worker ``--heartbeat-sec`` (default 3); brief CPU/GIL stalls can
+# delay heartbeats — use a higher value via env on flaky hosts.
+#
+# Tune:
+#   GPU_P2P_HEARTBEAT_TIMEOUT_SEC=15   # faster reassignment (demo LAN)
+#   GPU_P2P_HEARTBEAT_TIMEOUT_SEC=60   # conservative (heavy CPU training)
+HEARTBEAT_TIMEOUT_SEC = max(5.0, _env_float("GPU_P2P_HEARTBEAT_TIMEOUT_SEC", 20.0))
+
+REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
+
+# How often the tracker supervisor calls check_timeouts(). Lower = detect orphan slightly sooner
+# after the timeout elapses.
+WATCHDOG_CHECK_INTERVAL_SEC = max(0.5, _env_float("GPU_P2P_WATCHDOG_INTERVAL_SEC", 1.0))
 
 
 def _shard_bounds(idx: int) -> Tuple[int, int]:
@@ -71,6 +82,7 @@ class TaskShard:
     last_eval_acc: Optional[float] = None
     last_epochs_completed: Optional[int] = None
     last_epochs_planned: Optional[int] = None
+    completed_by_worker_id: Optional[str] = None
 
 
 @dataclass
@@ -82,6 +94,11 @@ class WorkerRecord:
     hardware_report: Optional[dict[str, Any]] = None
     registered_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+    # Proof-of-Learning credits (tracker-side; in-memory)
+    credits_total: float = 0.0
+    reputation: float = 50.0
+    positive_streak_rounds: int = 0
+    credit_events_count: int = 0
 
 
 class Scheduler:
@@ -101,6 +118,7 @@ class Scheduler:
         self._rounds_without_improve = 0
         # Latest per-worker per-task live progress (sent per epoch).
         self._progress: Dict[tuple[str, str], dict[str, Any]] = {}
+        self._credit_events: list[dict[str, Any]] = []
         for i in range(NUM_SHARDS):
             tid = f"shard-{i}"
             s, e = _shard_bounds(i)
@@ -113,6 +131,52 @@ class Scheduler:
             f"earlystop_min_delta={self._earlystop_min_delta:.4f}",
             flush=True,
         )
+        print(
+            f"[scheduler] liveness: heartbeat_timeout={HEARTBEAT_TIMEOUT_SEC:.1f}s "
+            f"watchdog_every={WATCHDOG_CHECK_INTERVAL_SEC:.1f}s (set GPU_P2P_HEARTBEAT_TIMEOUT_SEC / "
+            f"GPU_P2P_WATCHDOG_INTERVAL_SEC to tune orphan → reschedule latency)",
+            flush=True,
+        )
+
+    def _append_credit_event(self, worker_id: str, breakdown: learning_credits.CreditBreakdown) -> None:
+        d = breakdown.as_dict()
+        d["ts"] = time.time()
+        d["worker_id"] = worker_id
+        self._credit_events.append(d)
+        if len(self._credit_events) > 400:
+            self._credit_events = self._credit_events[-400:]
+
+    def _apply_credit_breakdown(self, worker_id: str, breakdown: learning_credits.CreditBreakdown) -> None:
+        w = self._workers.get(worker_id)
+        if not w:
+            return
+        w.credits_total += breakdown.credits
+        w.credit_events_count += 1
+        w.reputation = learning_credits.update_reputation(w.reputation, breakdown.credits)
+        self._append_credit_event(worker_id, breakdown)
+
+    def credit_snapshot(self) -> dict[str, Any]:
+        """Leaderboard + recent PoL events (for GET /credits, dashboard)."""
+        with self._lock:
+            board = sorted(
+                (
+                    {
+                        "worker_id": w.worker_id,
+                        "host_label": w.host_label,
+                        "credits_total": round(w.credits_total, 4),
+                        "reputation": round(w.reputation, 2),
+                        "positive_streak_rounds": w.positive_streak_rounds,
+                        "credit_events_count": w.credit_events_count,
+                    }
+                    for w in self._workers.values()
+                ),
+                key=lambda r: r["credits_total"],
+                reverse=True,
+            )
+            return {
+                "leaderboard": board,
+                "recent_events": list(self._credit_events[-80:]),
+            }
 
     def _stop_training_locked(self, reason: str) -> None:
         if self._training_stopped:
@@ -138,6 +202,7 @@ class Scheduler:
             self._best_val_acc = None
             self._rounds_without_improve = 0
             self._progress.clear()
+            self._credit_events.clear()
             self._workers.clear()
             for t in self._tasks.values():
                 t.status = TaskStatus.PENDING
@@ -147,6 +212,7 @@ class Scheduler:
                 t.last_eval_acc = None
                 t.last_epochs_completed = None
                 t.last_epochs_planned = None
+                t.completed_by_worker_id = None
             tids = list(self._tasks.keys())
             self._state.reset_for_new_session(tids)
         print("[scheduler] session reset: shards PENDING, training_stopped cleared, workers cleared", flush=True)
@@ -229,12 +295,23 @@ class Scheduler:
                     t.status = TaskStatus.IN_PROGRESS
             return True
 
-    def _pick_task_for_worker(self) -> Optional[TaskShard]:
+    def _pick_task_for_worker(self, worker_id: str) -> Optional[TaskShard]:
+        """Prefer higher-rarity shards for higher-reputation workers (more responsibility / upside)."""
+        candidates: list[TaskShard] = []
         for st in (TaskStatus.ORPHANED, TaskStatus.PENDING):
             for t in self._tasks.values():
                 if t.status == st:
-                    return t
-        return None
+                    candidates.append(t)
+        if not candidates:
+            return None
+        wrec = self._workers.get(worker_id)
+        rep_val = wrec.reputation if wrec else 50.0
+        high_trust = rep_val >= 50.0
+        candidates.sort(
+            key=lambda t: learning_credits.shard_rarity_multiplier(t.task_id),
+            reverse=high_trust,
+        )
+        return candidates[0]
 
     def _worker_active_task(self, worker_id: str) -> Optional[TaskShard]:
         for t in self._tasks.values():
@@ -257,7 +334,7 @@ class Scheduler:
             if existing:
                 return self._build_task_response_locked(existing, existing.status)
 
-            picked = self._pick_task_for_worker()
+            picked = self._pick_task_for_worker(worker_id)
             if not picked:
                 return TaskResponse(has_task=False, task=None, global_model_bytes_b64=None)
 
@@ -294,14 +371,20 @@ class Scheduler:
         shard_eval_acc: Optional[float] = None,
         local_epochs_planned: Optional[int] = None,
         local_epochs_completed: Optional[int] = None,
-    ) -> Tuple[bool, str]:
+        steps_completed: int = 0,
+        train_acc_running: Optional[float] = None,
+    ) -> Tuple[bool, str, dict[str, Any]]:
+        extras: dict[str, Any] = {}
         self.check_timeouts()
+        baseline: Optional[float]
+        rep = 50.0
+        streak = 0
         with self._lock:
             t = self._tasks.get(task_id)
             if not t or t.assigned_worker != worker_id:
-                return False, "task not assigned to worker"
+                return False, "task not assigned to worker", {}
             if t.status == TaskStatus.COMPLETED:
-                return False, "task already completed"
+                return False, "task already completed", {}
 
             t.status = TaskStatus.IN_PROGRESS
             t.last_heartbeat = time.time()
@@ -312,28 +395,62 @@ class Scheduler:
                 t.last_epochs_planned = int(local_epochs_planned)
             if local_epochs_completed is not None:
                 t.last_epochs_completed = int(local_epochs_completed)
+            baseline = self._state.snapshot().get("last_val_acc")
+            wrec = self._workers.get(worker_id)
+            if wrec:
+                rep = wrec.reputation
+                streak = wrec.positive_streak_rounds
 
         self._state.update_task_checkpoint(task_id, weights_bytes, last_index)
+
+        if steps_completed > 0:
+            bd = learning_credits.interim_submit_credit(
+                baseline_val_acc=baseline,
+                shard_eval_acc=shard_eval_acc,
+                steps_completed=steps_completed,
+                task_id=task_id,
+                reputation=rep,
+                positive_streak=streak,
+                train_acc_running=train_acc_running,
+            )
+            if bd.phase != "interim_skip":
+                with self._lock:
+                    self._apply_credit_breakdown(worker_id, bd)
+                extras["learning_credit"] = bd.as_dict()
 
         with self._lock:
             t = self._tasks[task_id]
             if shard_complete:
+                t.completed_by_worker_id = worker_id
                 t.status = TaskStatus.COMPLETED
                 t.assigned_worker = None
 
             if self._all_tasks_completed():
-                return self._run_aggregation_locked()
+                ok, msg, agg_extras = self._run_aggregation_locked()
+                extras.update(agg_extras)
+                return ok, msg, extras
 
-        return True, "checkpoint accepted"
+        return True, "checkpoint accepted", extras
 
     def _all_tasks_completed(self) -> bool:
         return all(t.status == TaskStatus.COMPLETED for t in self._tasks.values())
 
-    def _run_aggregation_locked(self) -> Tuple[bool, str]:
+    def _run_aggregation_locked(self) -> Tuple[bool, str, dict[str, Any]]:
+        old_val = self._state.snapshot().get("last_val_acc")
+        shard_rows: list[dict[str, Any]] = []
+        for tid, t in self._tasks.items():
+            if t.completed_by_worker_id:
+                shard_rows.append(
+                    {
+                        "worker_id": t.completed_by_worker_id,
+                        "task_id": tid,
+                        "eval_acc": t.last_eval_acc,
+                    }
+                )
         try:
             buffers = self._state.collect_shard_weights_for_fedavg(sorted(self._tasks.keys()))
         except ValueError as e:
-            return False, str(e)
+            return False, str(e), {}
         nbuf = len(buffers)
         merged = fedavg_state_dicts(buffers)
         next_round = self._state.global_round() + 1
@@ -345,6 +462,23 @@ class Scheduler:
         except Exception as e:
             print(f"[eval] failed: {e!r}", flush=True)
         self._state.set_global_bytes(merged, next_round, val_acc=val_acc, test_acc=test_acc)
+
+        round_summary: dict[str, Any] = {}
+        dist = learning_credits.round_pool_distribution(
+            old_val_acc=old_val,
+            new_val_acc=val_acc,
+            shard_rows=shard_rows,
+        )
+        for wid, breakdown in dist.items():
+            if breakdown.phase not in ("round_skip",):
+                self._apply_credit_breakdown(wid, breakdown)
+            w = self._workers.get(wid)
+            if w and breakdown.phase not in ("round_skip",):
+                if breakdown.credits > 0.05:
+                    w.positive_streak_rounds += 1
+                elif breakdown.credits < -0.05:
+                    w.positive_streak_rounds = 0
+            round_summary[wid] = breakdown.as_dict()
 
         completed_rounds = max(0, next_round - 1)
         # Early-stop is based on validation accuracy, not test accuracy.
@@ -383,6 +517,7 @@ class Scheduler:
                 t.status = TaskStatus.PENDING
                 t.assigned_worker = None
                 t.last_reported_index = -1
+                t.completed_by_worker_id = None
             self._state.reset_task_checkpoints(list(self._tasks.keys()))
 
         label = self._state.global_version_label()
@@ -396,7 +531,18 @@ class Scheduler:
             print(f"[eval] {label} fashion-mnist val_acc={vs}  test_acc={ts}", flush=True)
         if self._training_stopped and self._stop_reason:
             print(f"[training] terminal condition met; no further tasks will be scheduled ({self._stop_reason})", flush=True)
-        return True, f"aggregated to {label}"
+        agg_extras: dict[str, Any] = {
+            "aggregation": True,
+            "round_credits": round_summary,
+            "old_val_acc": old_val,
+            "new_val_acc": val_acc,
+            "global_val_delta": (
+                round(float(val_acc) - float(old_val), 4)
+                if val_acc is not None and old_val is not None
+                else None
+            ),
+        }
+        return True, f"aggregated to {label}", agg_extras
 
     def worker_current_shard(self, worker_id: str) -> Optional[str]:
         with self._lock:
@@ -460,6 +606,9 @@ class Scheduler:
                         "registered_at": w.registered_at,
                         "last_seen_age_sec": round(age, 1),
                         "alive": is_live,
+                        "credits_total": round(w.credits_total, 4),
+                        "reputation": round(w.reputation, 2),
+                        "positive_streak_rounds": w.positive_streak_rounds,
                         "current_shard": shard,
                         "current_shard_progress_pct": shard_prog.get("progress_pct") if shard_prog else None,
                         "current_shard_last_index": shard_prog.get("last_index") if shard_prog else None,
@@ -483,6 +632,7 @@ class Scheduler:
                 "stop_reason": self._stop_reason,
                 "best_val_acc": self._best_val_acc,
                 "rounds_without_improve": self._rounds_without_improve,
+                "learning_credits": self.credit_snapshot(),
                 "stop_policy": {
                     "max_fed_rounds": self._max_fed_rounds,
                     "earlystop_patience": self._earlystop_patience,
@@ -572,6 +722,9 @@ class Scheduler:
                     "registered_at": w.registered_at,
                     "last_seen_age_sec": round(now - w.last_seen, 3),
                     "hardware_report": w.hardware_report,
+                    "credits_total": round(w.credits_total, 4),
+                    "reputation": round(w.reputation, 2),
+                    "positive_streak_rounds": w.positive_streak_rounds,
                 }
                 for w in self._workers.values()
             ]
@@ -588,6 +741,7 @@ class Scheduler:
                 "stop_reason": self._stop_reason,
                 "best_val_acc": self._best_val_acc,
                 "rounds_without_improve": self._rounds_without_improve,
+                "learning_credits": self.credit_snapshot(),
                 "stop_policy": {
                     "max_fed_rounds": self._max_fed_rounds,
                     "earlystop_patience": self._earlystop_patience,

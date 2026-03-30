@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/health':    { target: 'http://localhost:8000', changeOrigin: true },
       '/registry':  { target: 'http://localhost:8000', changeOrigin: true },
+      '/credits':   { target: 'http://localhost:8000', changeOrigin: true },
       '/progress':  { target: 'http://localhost:8000', changeOrigin: true },
       '/log':       { target: 'http://localhost:8000', changeOrigin: true },
     },

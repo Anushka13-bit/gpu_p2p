@@ -53,6 +53,19 @@ export default function WorkerRoster({ nodes }) {
               </span>
             </div>
 
+            {/* Proof-of-Learning (tracker registry; optional on older builds) */}
+            <div className={styles.specs}>
+              <span className={styles.spec} style={{ color: '#f59e0b', fontWeight: 600 }}>
+                credits {w.credits_total != null ? Number(w.credits_total).toFixed(2) : '—'}
+              </span>
+              <span className={styles.spec} style={{ color: '#a5b4fc' }}>
+                rep {w.reputation != null ? Number(w.reputation).toFixed(1) : '—'}
+              </span>
+              <span className={styles.spec}>
+                streak {w.positive_streak_rounds ?? '—'}
+              </span>
+            </div>
+
             {/* Task info */}
             {hasTask ? (
               <div className={styles.taskSection}>

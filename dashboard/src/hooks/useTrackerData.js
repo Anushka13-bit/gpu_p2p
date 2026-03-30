@@ -24,12 +24,15 @@ async function fetchJSON(path) {
  *
  * /registry → registry_snapshot fields: total_nodes, active_nodes, nodes_on_shard,
  *             heartbeat_timeout_sec, training_stopped, stop_reason, best_val_acc,
- *             rounds_without_improve, stop_policy, nodes[], task_table{}
+ *             rounds_without_improve, stop_policy, nodes[], task_table{}, learning_credits{}
  *
  * We trust /registry for per-node live data (nodes[]) and /health for
  * global FedAvg metrics (last_val_acc, last_test_acc, round_no, etc.).
+ *
+ * ``/credits`` is fetched in parallel so PoL still works if an older tracker embeds
+ * credits only on the dedicated endpoint or omits them from snapshots.
  */
-function buildSnapshot(health, registry) {
+function buildSnapshot(health, registry, creditsEndpoint = null) {
   const h = health?.tasks ?? {};
   const r = registry ?? {};
 
@@ -71,6 +74,10 @@ function buildSnapshot(health, registry) {
     nodes,
     nodeRegistry,
     taskTable,
+
+    // Proof-of-Learning: prefer GET /credits, then snapshots
+    learningCredits:
+      creditsEndpoint ?? r.learning_credits ?? h.learning_credits ?? null,
   };
 }
 
@@ -123,12 +130,13 @@ export function useTrackerData() {
   const poll = useCallback(async () => {
     try {
       // Fetch both endpoints; /registry may not exist yet on older deployments
-      const [health, registry] = await Promise.all([
+      const [health, registry, creditsBody] = await Promise.all([
         fetchJSON('/health'),
         fetchJSON('/registry').catch(() => null),
+        fetchJSON('/credits').catch(() => null),
       ]);
 
-      const snap = buildSnapshot(health, registry);
+      const snap = buildSnapshot(health, registry, creditsBody);
       setSnapshot(snap);
       setConnectionStatus('online');
       pushHistoryPoint(snap);

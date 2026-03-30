@@ -4,12 +4,13 @@ import StatCard from './components/StatCard';
 import SectionCard from './components/SectionCard';
 import ShardTable from './components/ShardTable';
 import WorkerRoster from './components/WorkerRoster';
+import LearningCreditsPanel from './components/LearningCreditsPanel';
 import {
   ActiveNodesChart,
   TaskStatusChart,
   DataShardBar,
 } from './components/Charts';
-import { fmtAcc } from './utils/fmt';
+import { fmtAcc, shortId } from './utils/fmt';
 
 /* ── Inline SVG icons ──────────────────────────────────────────────────────── */
 const Icon = {
@@ -109,6 +110,11 @@ export default function App() {
   const nodes = online ? snapshot.nodes : [];
   const nodeRegistry = online ? snapshot.nodeRegistry : {};
   const stopPolicy = online ? snapshot.stop_policy : {};
+  const learningCredits = online ? snapshot.learningCredits : null;
+  const polBoard = online && learningCredits && Array.isArray(learningCredits.leaderboard)
+    ? learningCredits.leaderboard
+    : [];
+  const polTop = polBoard.length > 0 ? polBoard[0] : null;
 
   const totalShards = Object.keys(taskTable).length;
   const completedCount = Object.values(taskTable).filter(t => t.status === 'COMPLETED').length;
@@ -218,7 +224,33 @@ export default function App() {
               accent="#06b6d4"
               badge="Eval"
             />
+
+            <StatCard
+              loading={!online}
+              icon={Icon.round}
+              label="PoL leaderboard #1"
+              value={online ? (polTop ? shortId(polTop.worker_id) : '—') : null}
+              sub={online
+                ? (polTop
+                  ? `${Number(polTop.credits_total ?? 0).toFixed(2)} credits · rep ${Number(polTop.reputation ?? 50).toFixed(0)}`
+                  : (learningCredits ? 'No credit grants yet' : 'No PoL payload from tracker'))
+                : null}
+              accent="#f59e0b"
+              badge="PoL"
+            />
           </div>
+
+          {/* ── Proof-of-Learning (high in page so it is not missed) ── */}
+          <SectionCard
+            title="Proof-of-Learning Credits"
+            subtitle="Leaderboard and recent events (GET /credits + tracker snapshots)"
+            icon={Icon.round}
+            accent="#f59e0b"
+          >
+            {online
+              ? <LearningCreditsPanel learningCredits={learningCredits} />
+              : <OfflinePlaceholder height={160} />}
+          </SectionCard>
 
           {/* ── Charts row 1: Task Status ── */}
           <div className="charts-row two-col">
