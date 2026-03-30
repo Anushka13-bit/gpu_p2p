@@ -59,11 +59,11 @@ def train_shard_batch_loop(
     lr: float = 1e-3,
     verbose: bool = False,
     log_prefix: str = "",
-) -> Tuple[bytes, int, int, bool]:
+) -> Tuple[bytes, int, int, bool, float | None, float | None, float | None]:
     """
     Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute 0..10k).
     FL has no global epoch: we log local mini-batch steps and shard-wide eval accuracy.
-    Returns (weights_bytes, last_consumed_index, batches_run, shard_complete).
+    Returns (weights_bytes, last_consumed_index, batches_run, shard_complete, last_loss, running_train_acc, shard_eval_acc).
     """
     resume_next_index = max(image_start, min(resume_next_index, image_end - 1))
     idx_map = list(range(resume_next_index, image_end))
@@ -113,13 +113,20 @@ def train_shard_batch_loop(
             )
 
     shard_complete = last_consumed >= (image_end - 1)
+    last_loss = float(loss.item()) if "loss" in locals() else None
+    running_train_acc = 100.0 * running_correct / max(1, running_total) if running_total else None
+    shard_eval_acc = None
     if verbose:
         acc = eval_accuracy_on_range(model, base_10k, image_start, image_end, device)
+        shard_eval_acc = float(acc)
         print(
             f"{log_prefix} shard eval [{image_start},{image_end}): {acc:.2f}%  "
             f"shard_complete={shard_complete}",
             flush=True,
         )
+    else:
+        # Even if quiet, still compute once per submit so tracker can display it.
+        shard_eval_acc = float(eval_accuracy_on_range(model, base_10k, image_start, image_end, device))
     out = io.BytesIO()
     torch.save(model.state_dict(), out)
-    return out.getvalue(), last_consumed, steps_run, shard_complete
+    return out.getvalue(), last_consumed, steps_run, shard_complete, last_loss, running_train_acc, shard_eval_acc

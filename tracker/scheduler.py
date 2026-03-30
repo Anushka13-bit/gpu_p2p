@@ -255,6 +255,21 @@ class Scheduler:
         now = now or time.time()
         self.check_timeouts()
         with self._lock:
+            task_prog: dict[str, dict[str, Any]] = {}
+            for tid, t in self._tasks.items():
+                denom = max(1, t.image_end - t.image_start)
+                if t.last_reported_index < t.image_start:
+                    pct = 0.0
+                else:
+                    pct = 100.0 * (min(t.last_reported_index, t.image_end - 1) - t.image_start + 1) / denom
+                task_prog[tid] = {
+                    "status": t.status.value,
+                    "worker": t.assigned_worker,
+                    "range": [t.image_start, t.image_end],
+                    "last_index": t.last_reported_index,
+                    "progress_pct": round(pct, 2),
+                }
+
             rows: list[dict[str, Any]] = []
             active = 0
             for w in self._workers.values():
@@ -263,6 +278,7 @@ class Scheduler:
                 if is_live:
                     active += 1
                 shard = self._current_shard_locked(w.worker_id)
+                shard_prog = task_prog.get(shard) if shard else None
                 rows.append(
                     {
                         "worker_id": w.worker_id,
@@ -271,6 +287,8 @@ class Scheduler:
                         "last_seen_age_sec": round(age, 1),
                         "alive": is_live,
                         "current_shard": shard,
+                        "current_shard_progress_pct": shard_prog.get("progress_pct") if shard_prog else None,
+                        "current_shard_last_index": shard_prog.get("last_index") if shard_prog else None,
                     }
                 )
             rows.sort(key=lambda r: r["registered_at"])
@@ -281,10 +299,7 @@ class Scheduler:
                 "nodes_on_shard": on_task,
                 "heartbeat_timeout_sec": HEARTBEAT_TIMEOUT_SEC,
                 "nodes": rows,
-                "task_table": {
-                    tid: {"status": t.status.value, "worker": t.assigned_worker}
-                    for tid, t in self._tasks.items()
-                },
+                "task_table": task_prog,
             }
 
     def format_registry_terminal(self, now: Optional[float] = None) -> str:
@@ -301,12 +316,17 @@ class Scheduler:
             lbl = repr(r["host_label"])[1:-1] if r["host_label"] else "—"
             alive = "alive" if r["alive"] else "STALE"
             short_id = r["worker_id"][:8]
+            prog = r["current_shard_progress_pct"]
+            prog_s = f"{prog:.1f}%" if isinstance(prog, (int, float)) else "—"
             lines.append(
-                f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  shard={shard}"
+                f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  shard={shard}  shard_progress={prog_s}"
             )
         lines.append("  shard summary:")
         for tid, info in snap["task_table"].items():
-            lines.append(f"    {tid}: {info['status']}  worker={info['worker'] or '—'}")
+            lines.append(
+                f"    {tid}: {info['status']:<10}  worker={info['worker'] or '—':<36}  "
+                f"progress={info['progress_pct']:>6}%  last_index={info['last_index']}"
+            )
         lines.append("———" * 10)
         return "\n".join(lines)
 

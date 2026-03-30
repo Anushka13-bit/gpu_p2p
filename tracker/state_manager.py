@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from threading import RLock
 from typing import Dict, List, Optional
 
@@ -37,6 +39,14 @@ class StateManager:
         self._lock = RLock()
         self._global = GlobalState()
         self._per_task: Dict[str, TaskCheckpoint] = {}
+        self._ckpt_dir = Path(os.environ.get("GPU_P2P_CHECKPOINT_DIR", "./checkpoints")).resolve()
+        self._ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    def _task_ckpt_path(self, task_id: str) -> Path:
+        return self._ckpt_dir / f"{task_id}.pt"
+
+    def _global_path(self, round_no: int) -> Path:
+        return self._ckpt_dir / f"global_round_{round_no}.pt"
 
     def ensure_task_slot(self, task_id: str) -> None:
         with self._lock:
@@ -51,6 +61,10 @@ class StateManager:
             self._global.global_weights_bytes = weights_bytes
             self._global.round_no = next_round
             self._global.version_label = f"Global Model v{next_round}"
+            try:
+                self._global_path(next_round).write_bytes(weights_bytes)
+            except OSError:
+                pass
 
     def global_round(self) -> int:
         with self._lock:
@@ -65,6 +79,18 @@ class StateManager:
             self._per_task.setdefault(task_id, TaskCheckpoint())
             self._per_task[task_id].weights_bytes = weights_bytes
             self._per_task[task_id].last_index = last_index
+            try:
+                self._task_ckpt_path(task_id).write_bytes(weights_bytes)
+            except OSError:
+                pass
+
+    def get_task_checkpoint_bytes(self, task_id: str) -> Optional[bytes]:
+        with self._lock:
+            ckpt = self._per_task.get(task_id)
+            return copy.deepcopy(ckpt.weights_bytes) if ckpt and ckpt.weights_bytes else None
+
+    def checkpoint_dir(self) -> str:
+        return str(self._ckpt_dir)
 
     def get_task_resume_index(self, task_id: str) -> int:
         with self._lock:

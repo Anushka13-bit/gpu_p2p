@@ -69,6 +69,23 @@ class SubmitWeightsMetadata(BaseModel):
     last_index: int = Field(..., ge=-1, description="Last consumed index within [image_start, image_end).")
     steps_completed: int = Field(default=0, ge=0)
     shard_complete: bool = Field(default=False, description="True when this worker finished its shard.")
+    # Optional metrics (so tracker can print per-worker training progress).
+    train_loss_last: Optional[float] = Field(default=None, description="Last mini-batch loss observed on worker.")
+    train_acc_running: Optional[float] = Field(
+        default=None, description="Running train accuracy (%) over mini-batches in this submit window."
+    )
+    shard_eval_acc: Optional[float] = Field(
+        default=None, description="Eval accuracy (%) over the whole shard after this submit window."
+    )
+
+
+class LogEvent(BaseModel):
+    worker_id: str
+    host_label: Optional[str] = None
+    task_id: Optional[str] = None
+    level: str = Field(default="INFO")
+    message: str
+    ts: float = Field(..., description="Unix timestamp seconds from worker.")
 
 
 class AggregationBroadcast(BaseModel):

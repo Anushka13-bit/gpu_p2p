@@ -12,12 +12,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from shared.protocol import (
     HealthResponse,
     HeartbeatRequest,
     HeartbeatResponse,
+    LogEvent,
     RegisterRequest,
     RegisterResponse,
     SubmitWeightsMetadata,
@@ -62,6 +63,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GPU Tracker", lifespan=lifespan)
+
+_LOG_COUNTS: dict[str, int] = {}
 
 
 @app.post("/register", response_model=RegisterResponse)
@@ -126,7 +129,16 @@ async def submit_weights(
             "message": msg,
         }
 
-    body: dict[str, Any] = {"ok": True, "detail": msg}
+    # Print per-worker training metrics on the tracker terminal.
+    if meta.train_loss_last is not None or meta.train_acc_running is not None or meta.shard_eval_acc is not None:
+        print(
+            f"[metrics] worker={meta.worker_id[:8]}… task={meta.task_id} "
+            f"last_index={meta.last_index} steps={meta.steps_completed} done={meta.shard_complete} "
+            f"loss={meta.train_loss_last} train_acc={meta.train_acc_running} eval_acc={meta.shard_eval_acc}",
+            flush=True,
+        )
+
+    body: dict[str, Any] = {"ok": True, "detail": msg, "checkpoint_dir": state_manager.checkpoint_dir()}
     if broadcast:
         body["aggregation"] = broadcast
     return JSONResponse(body)
@@ -150,5 +162,25 @@ async def global_model() -> JSONResponse:
             "round_no": state_manager.global_round(),
             "version_label": state_manager.global_version_label(),
             "weights_b64": base64.b64encode(raw).decode("ascii"),
+            "checkpoint_dir": state_manager.checkpoint_dir(),
         }
     )
+
+
+@app.post("/log")
+async def log_event(body: LogEvent) -> JSONResponse:
+    key = body.worker_id
+    _LOG_COUNTS[key] = _LOG_COUNTS.get(key, 0) + 1
+    wid = body.worker_id[:8]
+    host = body.host_label or "—"
+    task = body.task_id or "—"
+    print(f"[workerlog] {body.level} host={host} worker={wid}… task={task}: {body.message}", flush=True)
+    return JSONResponse({"ok": True, "count": _LOG_COUNTS[key]})
+
+
+@app.get("/checkpoint/{task_id}")
+async def checkpoint(task_id: str) -> Response:
+    raw = state_manager.get_task_checkpoint_bytes(task_id)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="no checkpoint for task_id")
+    return Response(content=raw, media_type="application/octet-stream")

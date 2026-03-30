@@ -25,6 +25,7 @@ Thumbs.db
 
 # Data & checkpoints (downloaded at runtime)
 data/
+checkpoints/
 *.pt
 *.pth
 

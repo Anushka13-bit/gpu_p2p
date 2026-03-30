@@ -11,6 +11,7 @@ import requests
 from shared.hardware_sniff import sniff_register_tuple
 from shared.protocol import (
     HeartbeatRequest,
+    LogEvent,
     RegisterRequest,
     RegisterResponse,
     SubmitWeightsMetadata,
@@ -83,6 +84,9 @@ class TrackerClient:
         last_index: int,
         steps_completed: int,
         shard_complete: bool,
+        train_loss_last: float | None = None,
+        train_acc_running: float | None = None,
+        shard_eval_acc: float | None = None,
     ) -> dict[str, Any]:
         meta = SubmitWeightsMetadata(
             worker_id=worker_id,
@@ -90,6 +94,9 @@ class TrackerClient:
             last_index=last_index,
             steps_completed=steps_completed,
             shard_complete=shard_complete,
+            train_loss_last=train_loss_last,
+            train_acc_running=train_acc_running,
+            shard_eval_acc=shard_eval_acc,
         )
         files = {
             "weights_file": ("weights.pt", io.BytesIO(weights_bytes), "application/octet-stream"),
@@ -104,6 +111,13 @@ class TrackerClient:
         if not r.ok:
             raise RuntimeError(f"submit_weights failed: {r.status_code} {r.text}")
         return r.json()
+
+    def log_event(self, worker_id: str, message: str, level: str = "INFO", task_id: str | None = None, host_label: str | None = None) -> None:
+        body = LogEvent(worker_id=worker_id, host_label=host_label, task_id=task_id, level=level, message=message, ts=time.time())
+        r = self.session.post(f"{self.base_url}/log", json=body.model_dump(), timeout=self.timeout)
+        if not r.ok:
+            # Best-effort; don't crash training if logging fails.
+            return
 
 
 def sniff_hardware_defaults() -> tuple[float, int]:

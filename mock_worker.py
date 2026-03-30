@@ -68,6 +68,7 @@ def main() -> None:
     )
     worker_id = reg.worker_id
     print(f"registered worker_id={worker_id}", flush=True)
+    client.log_event(worker_id, f"registered gpu_vram_mb={vram} cpu_count={cpus}", host_label=args.host_label)
 
     base = build_mnist_base_10k("./data")
     device = torch.device("cpu")
@@ -109,6 +110,12 @@ def main() -> None:
                 f"[{args.host_label}] fed_round={assign.round_no} task={assign.task_id} "
                 f"rows[{assign.image_start},{assign.image_end})"
             )
+            client.log_event(
+                worker_id,
+                f"start_task round={assign.round_no} {assign.task_id} rows[{assign.image_start},{assign.image_end}) resume_next={resume_next}",
+                task_id=assign.task_id,
+                host_label=args.host_label,
+            )
 
             while True:
                 if args.die_after_first_round and submitted_once:
@@ -116,7 +123,7 @@ def main() -> None:
                     stop.set()
                     return
 
-                weights_bytes, last_idx, batches, done = train_shard_batch_loop(
+                weights_bytes, last_idx, batches, done, last_loss, run_acc, eval_acc = train_shard_batch_loop(
                     model,
                     base,
                     assign.image_start,
@@ -135,8 +142,18 @@ def main() -> None:
                     last_index=last_idx,
                     steps_completed=batches,
                     shard_complete=done,
+                    train_loss_last=last_loss,
+                    train_acc_running=run_acc,
+                    shard_eval_acc=eval_acc,
                 )
                 print(f"submit: {resp}", flush=True)
+                client.log_event(
+                    worker_id,
+                    f"submit task={assign.task_id} last_index={last_idx} steps={batches} done={done} "
+                    f"loss={last_loss} train_acc={run_acc} eval_acc={eval_acc}",
+                    task_id=assign.task_id,
+                    host_label=args.host_label,
+                )
                 submitted_once = True
                 if "aggregation" in resp:
                     print(f"*** {resp['aggregation']}", flush=True)
