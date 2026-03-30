@@ -35,7 +35,9 @@ def eval_accuracy_on_range(
     for i in range(0, len(indices), batch_size):
         chunk = indices[i : i + batch_size]
         xs = torch.stack([base[j][0] for j in chunk]).to(device)
-        ys = torch.stack([torch.tensor(base[j][1], device=device) for j in chunk])
+        ys = torch.stack(
+            [torch.as_tensor(base[j][1], dtype=torch.long) for j in chunk]
+        ).to(device)
         pred = model(xs).argmax(dim=1)
         correct += int((pred == ys).sum().item())
         total += len(chunk)
@@ -100,8 +102,12 @@ def train_shard_batch_loop(
     on_epoch_end: Callable[[int, int, float | None, float | None, int], None] | None = None,
 ) -> Tuple[bytes, int, int, bool, float | None, float | None, float | None, int, int]:
     """
-    Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute dataset indices),
-    repeating the slice for ``local_epochs`` passes (local epochs).
+    Train on indices ``[resume_next_index, image_end)`` (absolute dataset indices),
+    repeating the slice for ``local_epochs`` full passes (local epochs).
+
+    All ``local_epochs`` are always completed in this call: ``max_steps`` cannot truncate
+    mid-training; it is raised to at least the batch count needed for the full epoch plan.
+
     Returns (
       weights_bytes, last_consumed_index, batches_run, shard_complete,
       last_loss, running_train_acc, shard_eval_acc,
@@ -126,11 +132,14 @@ def train_shard_batch_loop(
     local_epochs_planned = max(1, int(local_epochs))
     planned_batches_per_epoch = (len(idx_map_base) + batch_size - 1) // batch_size
     planned_total_batches = planned_batches_per_epoch * local_epochs_planned
+    # Never stop before finishing all local_epochs (max_steps is a floor, not a cap).
+    effective_max_steps = max(max(0, int(max_steps)), planned_total_batches)
     if verbose:
         print(
             f"{log_prefix} slice [{resume_next_index},{image_end})  "
             f"local_epochs={local_epochs_planned}  "
-            f"batches_this_call≤{min(max_steps, planned_total_batches)}/{planned_total_batches} (batch_size={batch_size})",
+            f"batches_this_call={planned_total_batches}/{planned_total_batches} "
+            f"(batch_size={batch_size}, effective_max_steps={effective_max_steps})",
             flush=True,
         )
 
@@ -139,11 +148,13 @@ def train_shard_batch_loop(
         if verbose:
             print(f"{log_prefix}  epoch {ep + 1}/{local_epochs_planned}", flush=True)
         for i in range(0, len(idx_map_base), batch_size):
-            if steps_run >= max_steps:
+            if steps_run >= effective_max_steps:
                 break
             chunk = idx_map_base[i : i + batch_size]
             xs = torch.stack([base[j][0] for j in chunk]).to(device)
-            ys = torch.stack([torch.tensor(base[j][1], device=device) for j in chunk])
+            ys = torch.stack(
+                [torch.as_tensor(base[j][1], dtype=torch.long) for j in chunk]
+            ).to(device)
             optimizer.zero_grad()
             loss = criterion(model(xs), ys)
             loss.backward()
@@ -158,12 +169,10 @@ def train_shard_batch_loop(
                 ra = 100.0 * running_correct / max(1, running_total)
                 if log_steps:
                     print(
-                        f"{log_prefix}  step {steps_run}/{min(max_steps, planned_total_batches)}  "
+                        f"{log_prefix}  step {steps_run}/{planned_total_batches}  "
                         f"loss={loss.item():.4f}  running_train_acc={ra:.2f}%",
                         flush=True,
                     )
-        if steps_run >= max_steps:
-            break
         epochs_completed += 1
         if on_epoch_end is not None:
             last_loss_ep = float(loss.item()) if "loss" in locals() else None

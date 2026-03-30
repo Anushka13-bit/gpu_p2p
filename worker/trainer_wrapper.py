@@ -59,7 +59,7 @@ def main() -> None:
     resume_next = assign.resume_next_index
 
     while True:
-        weights_bytes, last_idx, batches, done = train_shard_batch_loop(
+        out = train_shard_batch_loop(
             model,
             base,
             assign.image_start,
@@ -68,6 +68,7 @@ def main() -> None:
             device,
             max_steps=steps,
         )
+        weights_bytes, last_idx, batches, done = out[0], out[1], out[2], out[3]
         resp = client.submit_weights(
             worker_id=worker_id,
             task_id=assign.task_id,

@@ -42,9 +42,14 @@ def main() -> None:
         default="fashion_mnist_csv",
         help="Dataset to train on (fashion_mnist_csv, fashion_mnist, mnist).",
     )
-    # With 70k images / 10 shards, one shard is 7k samples; at batch_size=64 that's ~110 batches/epoch.
-    # For 15 epochs, you want >= 480 batches; default gives a bit of slack.
-    parser.add_argument("--steps", type=int, default=600)
+    # Ignored as a ceiling: train_shard_batch_loop always completes --local-epochs full passes
+    # over the current slice (see worker.train_utils.train_shard_batch_loop).
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=600,
+        help="Legacy floor passed to trainer; full local epochs always run in one submit window.",
+    )
     parser.add_argument(
         "--local-epochs",
         type=int,
