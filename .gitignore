@@ -35,7 +35,6 @@ archive 2/
 # Env & secrets
 .env
 .env.*
-!.env.example
 
 # PyTorch / Jupyter
 .ipynb_checkpoints/
