@@ -165,12 +165,14 @@ async def global_model() -> JSONResponse:
         raise HTTPException(status_code=404, detail="no global model yet")
     import base64
 
+    snap = state_manager.snapshot()
     return JSONResponse(
         {
             "round_no": state_manager.global_round(),
             "version_label": state_manager.global_version_label(),
             "weights_b64": base64.b64encode(raw).decode("ascii"),
             "checkpoint_dir": state_manager.checkpoint_dir(),
+            "last_test_acc": snap.get("last_test_acc"),
         }
     )
 

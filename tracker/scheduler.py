@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from shared.protocol import TaskAssignment, TaskResponse, TaskStatus
 
 from .aggregator import fedavg_state_dicts
+from .eval_utils import eval_global_fashion_mnist_test_acc
 from .state_manager import StateManager
 
 
@@ -229,7 +230,12 @@ class Scheduler:
         nbuf = len(buffers)
         merged = fedavg_state_dicts(buffers)
         next_round = self._state.global_round() + 1
-        self._state.set_global_bytes(merged, next_round)
+        test_acc: Optional[float] = None
+        try:
+            test_acc = float(eval_global_fashion_mnist_test_acc(merged, device="cpu"))
+        except Exception as e:
+            print(f"[eval] failed: {e!r}", flush=True)
+        self._state.set_global_bytes(merged, next_round, test_acc=test_acc)
 
         for t in self._tasks.values():
             t.status = TaskStatus.PENDING
@@ -242,6 +248,8 @@ class Scheduler:
             f"[fedavg] averaged {nbuf} shard weight tensors (element-wise mean of float params) → {label}",
             flush=True,
         )
+        if test_acc is not None:
+            print(f"[eval] {label} fashion-mnist test_acc={test_acc:.2f}%", flush=True)
         return True, f"aggregated to {label}"
 
     def worker_current_shard(self, worker_id: str) -> Optional[str]:
