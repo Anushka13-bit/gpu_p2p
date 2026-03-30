@@ -21,7 +21,9 @@ TOTAL_IMAGES = 10_000
 NUM_SHARDS = 5
 SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
 # Must exceed worker heartbeat interval (default 3s) so brief jitter does not orphan tasks.
-HEARTBEAT_TIMEOUT_SEC = 12.0
+# On some machines (esp. Windows + CPU-bound torch) the heartbeat thread can be delayed;
+# a wider window avoids false ORPHANED tasks during training.
+HEARTBEAT_TIMEOUT_SEC = 60.0
 REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
 WATCHDOG_CHECK_INTERVAL_SEC = 3.0
 
