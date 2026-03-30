@@ -161,6 +161,18 @@ def main() -> None:
                     verbose=not args.quiet_training,
                     log_steps=bool(args.log_steps),
                     log_prefix=log_prefix,
+                    on_epoch_end=lambda ep_done, ep_total, loss_last, acc_run, last_idx: client.progress_event(
+                        worker_id=worker_id,
+                        task_id=assign.task_id,
+                        local_epoch=ep_done,
+                        local_epochs_total=ep_total,
+                        host_label=args.host_label,
+                        shard_progress_pct=100.0
+                        * (max(0, min(last_idx, assign.image_end - 1) - assign.image_start + 1))
+                        / max(1, (assign.image_end - assign.image_start)),
+                        train_acc_running=acc_run,
+                        train_loss_last=loss_last,
+                    ),
                 )
 
                 resp = client.submit_weights(

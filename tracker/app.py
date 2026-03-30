@@ -19,6 +19,7 @@ from shared.protocol import (
     HeartbeatRequest,
     HeartbeatResponse,
     LogEvent,
+    ProgressEvent,
     RegisterRequest,
     RegisterResponse,
     SubmitWeightsMetadata,
@@ -186,6 +187,21 @@ async def log_event(body: LogEvent) -> JSONResponse:
     task = body.task_id or "—"
     print(f"[workerlog] {body.level} host={host} worker={wid}… task={task}: {body.message}", flush=True)
     return JSONResponse({"ok": True, "count": _LOG_COUNTS[key]})
+
+
+@app.post("/progress")
+async def progress_event(body: ProgressEvent) -> JSONResponse:
+    scheduler.update_progress(
+        worker_id=body.worker_id,
+        task_id=body.task_id,
+        local_epoch=body.local_epoch,
+        local_epochs_total=body.local_epochs_total,
+        shard_progress_pct=body.shard_progress_pct,
+        train_acc_running=body.train_acc_running,
+        train_loss_last=body.train_loss_last,
+        ts=body.ts,
+    )
+    return JSONResponse({"ok": True})
 
 
 @app.get("/checkpoint/{task_id}")

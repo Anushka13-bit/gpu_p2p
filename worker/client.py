@@ -12,6 +12,7 @@ from shared.hardware_sniff import sniff_register_tuple
 from shared.protocol import (
     HeartbeatRequest,
     LogEvent,
+    ProgressEvent,
     RegisterRequest,
     RegisterResponse,
     SubmitWeightsMetadata,
@@ -121,6 +122,32 @@ class TrackerClient:
         r = self.session.post(f"{self.base_url}/log", json=body.model_dump(), timeout=self.timeout)
         if not r.ok:
             # Best-effort; don't crash training if logging fails.
+            return
+
+    def progress_event(
+        self,
+        worker_id: str,
+        task_id: str,
+        local_epoch: int,
+        local_epochs_total: int,
+        host_label: str | None = None,
+        shard_progress_pct: float | None = None,
+        train_acc_running: float | None = None,
+        train_loss_last: float | None = None,
+    ) -> None:
+        body = ProgressEvent(
+            worker_id=worker_id,
+            host_label=host_label,
+            task_id=task_id,
+            local_epoch=local_epoch,
+            local_epochs_total=local_epochs_total,
+            shard_progress_pct=shard_progress_pct,
+            train_acc_running=train_acc_running,
+            train_loss_last=train_loss_last,
+            ts=time.time(),
+        )
+        r = self.session.post(f"{self.base_url}/progress", json=body.model_dump(), timeout=self.timeout)
+        if not r.ok:
             return
 
 

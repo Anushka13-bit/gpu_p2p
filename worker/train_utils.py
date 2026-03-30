@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Callable, Tuple
 
 import torch
 import torch.nn as nn
@@ -95,6 +95,7 @@ def train_shard_batch_loop(
     verbose: bool = False,
     log_steps: bool = False,
     log_prefix: str = "",
+    on_epoch_end: Callable[[int, int, float | None, float | None, int], None] | None = None,
 ) -> Tuple[bytes, int, int, bool, float | None, float | None, float | None, int, int]:
     """
     Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute 0..10k),
@@ -162,6 +163,10 @@ def train_shard_batch_loop(
         if steps_run >= max_steps:
             break
         epochs_completed += 1
+        if on_epoch_end is not None:
+            last_loss_ep = float(loss.item()) if "loss" in locals() else None
+            running_train_acc_ep = 100.0 * running_correct / max(1, running_total) if running_total else None
+            on_epoch_end(epochs_completed, local_epochs_planned, last_loss_ep, running_train_acc_ep, last_consumed)
 
     shard_complete = last_consumed >= (image_end - 1)
     last_loss = float(loss.item()) if "loss" in locals() else None

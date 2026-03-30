@@ -68,11 +68,35 @@ class Scheduler:
         self._lock = RLock()
         self._workers: Dict[str, WorkerRecord] = {}
         self._tasks: Dict[str, TaskShard] = {}
+        # Latest per-worker per-task live progress (sent per epoch).
+        self._progress: Dict[tuple[str, str], dict[str, Any]] = {}
         for i in range(NUM_SHARDS):
             tid = f"shard-{i}"
             s, e = _shard_bounds(i)
             self._tasks[tid] = TaskShard(task_id=tid, image_start=s, image_end=e)
             self._state.ensure_task_slot(tid)
+
+    def update_progress(
+        self,
+        worker_id: str,
+        task_id: str,
+        local_epoch: int,
+        local_epochs_total: int,
+        shard_progress_pct: Optional[float],
+        train_acc_running: Optional[float],
+        train_loss_last: Optional[float],
+        ts: float,
+    ) -> None:
+        """Called by /progress endpoint; used for live tracker registry rendering."""
+        with self._lock:
+            self._progress[(worker_id, task_id)] = {
+                "local_epoch": int(local_epoch),
+                "local_epochs_total": int(local_epochs_total),
+                "shard_progress_pct": float(shard_progress_pct) if shard_progress_pct is not None else None,
+                "train_acc_running": float(train_acc_running) if train_acc_running is not None else None,
+                "train_loss_last": float(train_loss_last) if train_loss_last is not None else None,
+                "ts": float(ts),
+            }
 
     def check_timeouts(self, now: Optional[float] = None) -> List[str]:
         now = now or time.time()
@@ -306,6 +330,7 @@ class Scheduler:
                     active += 1
                 shard = self._current_shard_locked(w.worker_id)
                 shard_prog = task_prog.get(shard) if shard else None
+                live = self._progress.get((w.worker_id, shard)) if shard else None
                 rows.append(
                     {
                         "worker_id": w.worker_id,
@@ -318,6 +343,11 @@ class Scheduler:
                         "current_shard_last_index": shard_prog.get("last_index") if shard_prog else None,
                         "current_shard_eval_acc": shard_prog.get("eval_acc") if shard_prog else None,
                         "current_shard_epochs": shard_prog.get("epochs") if shard_prog else None,
+                        "live_epoch": live.get("local_epoch") if live else None,
+                        "live_epoch_total": live.get("local_epochs_total") if live else None,
+                        "live_progress_pct": live.get("shard_progress_pct") if live else None,
+                        "live_train_acc": live.get("train_acc_running") if live else None,
+                        "live_ts_age_sec": round(now - live.get("ts"), 1) if live and live.get("ts") else None,
                     }
                 )
             rows.sort(key=lambda r: r["registered_at"])
@@ -345,14 +375,25 @@ class Scheduler:
             lbl = repr(r["host_label"])[1:-1] if r["host_label"] else "—"
             alive = "alive" if r["alive"] else "STALE"
             short_id = r["worker_id"][:8]
-            prog = r["current_shard_progress_pct"]
+            # Prefer live per-epoch progress if available; else fall back to submit-based progress.
+            live_pct = r.get("live_progress_pct")
+            prog = live_pct if isinstance(live_pct, (int, float)) else r["current_shard_progress_pct"]
             prog_s = f"{prog:.1f}%" if isinstance(prog, (int, float)) else "—"
             ep_s = r.get("current_shard_epochs") or "—"
             acc = r.get("current_shard_eval_acc")
             acc_s = f"{acc:.1f}%" if isinstance(acc, (int, float)) else "—"
+
+            live_ep = r.get("live_epoch")
+            live_total = r.get("live_epoch_total")
+            if isinstance(live_ep, int) and isinstance(live_total, int) and live_total > 0:
+                filled = max(0, min(10, int(round(10 * (live_ep / live_total)))))
+                bar = "█" * filled + "░" * (10 - filled)
+                ep_live_s = f"{bar} {live_ep}/{live_total}"
+            else:
+                ep_live_s = "—"
             lines.append(
                 f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  "
-                f"shard={shard}  progress={prog_s}  epochs={ep_s}  acc={acc_s}"
+                f"shard={shard}  progress={prog_s}  epochs={ep_live_s}  acc={acc_s}"
             )
         lines.append("  shard summary:")
         for tid, info in snap["task_table"].items():
