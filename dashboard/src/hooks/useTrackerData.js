@@ -92,6 +92,17 @@ export function useTrackerData() {
     const activeNodes = nodes.filter(n => (n?.last_seen_age_sec ?? Number.POSITIVE_INFINITY) <= timeout);
     const gpuVramMbTotal = activeNodes.reduce((acc, n) => acc + (Number(n?.gpu_vram_mb) || 0), 0);
     const cpuTotal = activeNodes.reduce((acc, n) => acc + (Number(n?.cpu_count) || 0), 0);
+
+    // Per-worker VRAM (GB) series keys so the chart changes when workers join/leave.
+    // Limit to a handful of workers to keep the legend readable.
+    const top = [...activeNodes]
+      .sort((a, b) => (Number(b?.gpu_vram_mb) || 0) - (Number(a?.gpu_vram_mb) || 0))
+      .slice(0, 6);
+    const perWorker = {};
+    top.forEach((w, i) => {
+      const wid = (w?.worker_id || `w${i + 1}`).slice(0, 8);
+      perWorker[`vram_${wid}`] = (Number(w?.gpu_vram_mb) || 0) / 1024.0;
+    });
     const point = {
       t: now,
       label:        new Date(now).toLocaleTimeString(),
@@ -101,6 +112,7 @@ export function useTrackerData() {
       active_nodes: snap.nodeRegistry.active_nodes,
       gpu_vram_gb:  gpuVramMbTotal / 1024.0,
       cpu_total:    cpuTotal,
+      ...perWorker,
       completed:    Object.values(tt).filter(t => t.status === 'COMPLETED').length,
       in_progress:  Object.values(tt).filter(t => t.status === 'IN_PROGRESS').length,
     };

@@ -5,7 +5,6 @@ import SectionCard from './components/SectionCard';
 import ShardTable from './components/ShardTable';
 import WorkerRoster from './components/WorkerRoster';
 import {
-  GpuSpecsChart,
   ActiveNodesChart,
   TaskStatusChart,
   DataShardBar,
@@ -221,19 +220,8 @@ export default function App() {
             />
           </div>
 
-          {/* ── Charts row 1: GPU Specs + Task Status ── */}
+          {/* ── Charts row 1: Task Status ── */}
           <div className="charts-row two-col">
-            <SectionCard
-              title="GPU Specs over Time"
-              subtitle="Total active VRAM (GB) and CPU cores across active nodes"
-              icon={Icon.cpu}
-              accent="#06b6d4"
-            >
-              {online && metricHistory.length > 0
-                ? <GpuSpecsChart data={metricHistory} />
-                : <OfflinePlaceholder />}
-            </SectionCard>
-
             <SectionCard
               title="Task Status Distribution"
               subtitle="Current breakdown of shard states from task_table"

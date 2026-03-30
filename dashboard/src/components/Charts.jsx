@@ -28,9 +28,12 @@ export function GpuSpecsChart({ data }) {
   const filtered = data.filter(d => d.gpu_vram_gb != null || d.cpu_total != null);
   if (filtered.length === 0) return null;
 
+  const vramKeys = Object.keys(filtered[filtered.length - 1] || {}).filter(k => k.startsWith('vram_'));
+  const colors = ['#06b6d4', '#3b82f6', '#6366f1', '#10b981', '#f59e0b', '#ec4899'];
+
   return (
     <ResponsiveContainer width="100%" height={220}>
-      <LineChart data={filtered} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+      <AreaChart data={filtered} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
         <XAxis dataKey="label" tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis
           yAxisId="left"
@@ -53,21 +56,44 @@ export function GpuSpecsChart({ data }) {
           {...TOOLTIP_STYLE}
           formatter={(v, name) => {
             if (v == null) return ['—', name];
-            if (name === 'Total VRAM') return [`${Number(v).toFixed(2)} GB`, name];
+            if (String(name).includes('VRAM')) return [`${Number(v).toFixed(2)} GB`, name];
             return [`${Number(v)}`, name];
           }}
         />
         <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
-        <Line
-          yAxisId="left"
-          type="monotone"
-          dataKey="gpu_vram_gb"
-          name="Total VRAM"
-          stroke="#06b6d4"
-          strokeWidth={2.5}
-          dot={false}
-          activeDot={{ r: 4, fill: '#06b6d4' }}
-        />
+        {vramKeys.length > 0 ? (
+          vramKeys.map((k, idx) => (
+            <Area
+              key={k}
+              yAxisId="left"
+              type="monotone"
+              dataKey={k}
+              stackId="vram"
+              name={`VRAM ${k.replace('vram_', '')}`}
+              stroke={colors[idx % colors.length]}
+              fill={colors[idx % colors.length]}
+              fillOpacity={0.18}
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 3, fill: colors[idx % colors.length] }}
+              connectNulls={false}
+            />
+          ))
+        ) : (
+          <Area
+            yAxisId="left"
+            type="monotone"
+            dataKey="gpu_vram_gb"
+            name="Total VRAM"
+            stroke="#06b6d4"
+            fill="#06b6d4"
+            fillOpacity={0.18}
+            strokeWidth={2.5}
+            dot={false}
+            activeDot={{ r: 3, fill: '#06b6d4' }}
+            connectNulls={false}
+          />
+        )}
         <Line
           yAxisId="right"
           type="monotone"
@@ -78,7 +104,7 @@ export function GpuSpecsChart({ data }) {
           dot={false}
           activeDot={{ r: 4, fill: '#f59e0b' }}
         />
-      </LineChart>
+      </AreaChart>
     </ResponsiveContainer>
   );
 }
