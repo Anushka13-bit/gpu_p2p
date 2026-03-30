@@ -9,7 +9,10 @@ from pathlib import Path
 from threading import RLock
 from typing import Dict, List, Optional
 
+import torch
+
 from shared.protocol import TaskStatus
+from shared.models import SmallCNN, weights_to_bytes
 
 
 @dataclass
@@ -57,6 +60,30 @@ class StateManager:
     def get_global_bytes(self) -> Optional[bytes]:
         with self._lock:
             return copy.deepcopy(self._global.global_weights_bytes) if self._global.global_weights_bytes else None
+
+    def ensure_initial_global(self) -> bytes:
+        """
+        Ensure there is a single shared initial model for round 1.
+
+        Without this, each worker would initialize its own random weights and FedAvg would average
+        across different random initializations, often collapsing to near-random accuracy.
+        """
+        with self._lock:
+            if self._global.global_weights_bytes is not None:
+                return copy.deepcopy(self._global.global_weights_bytes)
+            torch.manual_seed(0)
+            model = SmallCNN(in_channels=1, num_classes=10)
+            raw = weights_to_bytes(model.state_dict())
+            self._global.global_weights_bytes = raw
+            self._global.round_no = 1
+            self._global.version_label = "Global Model v1"
+            self._global.last_val_acc = None
+            self._global.last_test_acc = None
+            try:
+                self._global_path(1).write_bytes(raw)
+            except OSError:
+                pass
+            return copy.deepcopy(raw)
 
     def set_global_bytes(
         self,

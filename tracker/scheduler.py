@@ -236,6 +236,8 @@ class Scheduler:
             return self._build_task_response_locked(picked, prior_status)
 
     def _build_task_response_locked(self, t: TaskShard, prior_status: TaskStatus) -> TaskResponse:
+        # Ensure all workers start from the same initial global model in round 1.
+        self._state.ensure_initial_global()
         last_idx = self._state.get_task_resume_index(t.task_id)
         resume_next = _resume_next_index(t.image_start, t.image_end, last_idx)
         starting = self._state.get_weights_for_assignment(t.task_id, prior_status)
