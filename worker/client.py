@@ -33,10 +33,13 @@ def encode_task_for_container(task: TaskResponse) -> str:
 
 
 class TrackerClient:
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, token: str, timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
+        self.token = token
         self.timeout = timeout
         self.session = requests.Session()
+        # Attach token to every request automatically.
+        self.session.headers.update({"X-Worker-Token": token})
 
     def register(
         self,
@@ -50,6 +53,7 @@ class TrackerClient:
             cpu_count=cpu_count,
             host_label=host_label,
             hardware_report=dict(hardware_report) if hardware_report is not None else None,
+            token=self.token,
         )
         r = self.session.post(
             f"{self.base_url}/register",

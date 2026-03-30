@@ -24,7 +24,35 @@ class RegisterRequest(BaseModel):
         default=None,
         description="Optional JSON from shared.hardware_sniff.build_hardware_report (full client specs).",
     )
+    token: Optional[str] = Field(None, description="Legacy token field.")
+    worker_token: Optional[str] = Field(None, description="Pre-shared UUID worker token issued by the tracker admin.")
 
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+
+class SignupResponse(BaseModel):
+    worker_id: str
+    worker_token: str
+    status: str
+    message: str
+
+class WorkerInfo(BaseModel):
+    worker_id: str
+    name: str
+    email: str
+    status: str
+    shards_completed: int
+    failed_validations: int
+    credit_balance: int
+    joined_at: float
+
+class BanRequest(BaseModel):
+    worker_id: str
+    reason: str
+
+class UnbanRequest(BaseModel):
+    worker_id: str
 
 class RegisterResponse(BaseModel):
     worker_id: str
@@ -34,6 +62,7 @@ class RegisterResponse(BaseModel):
 class HeartbeatRequest(BaseModel):
     worker_id: str
     task_id: Optional[str] = None
+    token: Optional[str] = Field(default=None, description="Pre-shared UUID worker token (required by tracker auth).")
 
 
 class HeartbeatResponse(BaseModel):

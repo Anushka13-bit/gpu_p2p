@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import os
+import sys
 import threading
 import time
 from typing import Optional
@@ -70,9 +72,28 @@ def main() -> None:
         default=0,
         help="Stop after this many FedAvg aggregations (0 = unlimited).",
     )
+    parser.add_argument(
+        "--already-token",
+        default=os.environ.get("WORKER_TOKEN", ""),
+        help="Pre-shared UUID worker token (skip signup).",
+    )
+    parser.add_argument(
+        "--force-fail-validation",
+        action="store_true",
+    )
     args = parser.parse_args()
 
-    client = TrackerClient(args.tracker)
+    if not args.already_token:
+        import requests, uuid
+        name = f"mock-{uuid.uuid4().hex[:4]}"
+        email = f"{name}@test.com"
+        r = requests.post(f"{args.tracker.rstrip('/')}/signup", json={"name": name, "email": email})
+        r.raise_for_status()
+        d = r.json()
+        args.already_token = d["worker_token"]
+        print(f"signup successful! token={args.already_token} message={d['message']}")
+
+    client = TrackerClient(args.tracker, token=args.already_token)
     vram, cpus = sniff_hardware_defaults()
     reg = client.register(
         gpu_vram_mb=vram,
@@ -162,6 +183,15 @@ def main() -> None:
                     log_steps=bool(args.log_steps),
                     log_prefix=log_prefix,
                 )
+                
+                if getattr(args, "force_fail_validation", False):
+                    import io
+                    with torch.no_grad():
+                        for param in model.parameters():
+                            param.zero_()
+                    out_buf = io.BytesIO()
+                    torch.save(model.state_dict(), out_buf)
+                    weights_bytes = out_buf.getvalue()
 
                 resp = client.submit_weights(
                     worker_id=worker_id,

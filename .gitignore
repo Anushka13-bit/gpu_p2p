@@ -36,6 +36,8 @@ archive 2/
 .env
 .env.*
 !.env.example
+# Worker authorization tokens — never commit these
+authorized_tokens.txt
 
 # PyTorch / Jupyter
 .ipynb_checkpoints/

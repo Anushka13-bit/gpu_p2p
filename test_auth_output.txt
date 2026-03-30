@@ -1,0 +1,12 @@
+[auth] WARNING — no valid tokens in 'authorized_tokens.txt' (all workers will be rejected unless AUTH_DISABLED=1)
+
+=== Auth smoke-test ===
+
+  [FAIL] Valid token 1 accepted
+  [FAIL] Valid token 2 accepted
+  [PASS] Invalid token rejected
+  [PASS] None token rejected
+  [PASS] Empty string rejected
+  [FAIL] Uppercase token accepted
+
+FAILED tests: ['Valid token 1 accepted', 'Valid token 2 accepted', 'Uppercase token accepted']

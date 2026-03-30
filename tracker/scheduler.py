@@ -141,6 +141,14 @@ class Scheduler:
                 return t
         return None
 
+    def orphan_task_for_worker(self, worker_id: str) -> None:
+        self.check_timeouts()
+        with self._lock:
+            for tid, t in self._tasks.items():
+                if t.assigned_worker == worker_id and t.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+                    t.status = TaskStatus.ORPHANED
+                    t.assigned_worker = None
+
     def request_task(self, worker_id: str) -> TaskResponse:
         self.check_timeouts()
         with self._lock:
@@ -186,6 +194,7 @@ class Scheduler:
         shard_eval_acc: Optional[float] = None,
         local_epochs_planned: Optional[int] = None,
         local_epochs_completed: Optional[int] = None,
+        trust_weight: float = 1.0,
     ) -> Tuple[bool, str]:
         self.check_timeouts()
         with self._lock:
@@ -205,7 +214,7 @@ class Scheduler:
             if local_epochs_completed is not None:
                 t.last_epochs_completed = int(local_epochs_completed)
 
-        self._state.update_task_checkpoint(task_id, weights_bytes, last_index)
+        self._state.update_task_checkpoint(task_id, weights_bytes, last_index, trust_weight)
 
         with self._lock:
             t = self._tasks[task_id]

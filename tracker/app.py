@@ -8,10 +8,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import os
+import io
+import torch
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, Depends
 from fastapi.responses import JSONResponse, Response
 
 from shared.protocol import (
@@ -23,17 +26,25 @@ from shared.protocol import (
     RegisterResponse,
     SubmitWeightsMetadata,
     TaskResponse,
+    SignupRequest,
+    SignupResponse,
+    BanRequest,
+    UnbanRequest,
 )
 
 from .scheduler import REGISTRY_DISPLAY_INTERVAL_SEC, WATCHDOG_CHECK_INTERVAL_SEC, Scheduler
 from .state_manager import StateManager
+from .worker_registry import WorkerRegistry
 
 state_manager = StateManager()
 scheduler = Scheduler(state_manager)
-
+registry = WorkerRegistry(os.getenv("REGISTRY_DB", "registry.db"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if os.getenv("ADMIN_TOKEN", "admin-secret-change-me") == "admin-secret-change-me":
+        print("WARNING: ADMIN_TOKEN is set to default value. Set ADMIN_TOKEN env variable before production use.", flush=True)
+    
     async def _registry_supervisor():
         last_print = 0.0
         while True:
@@ -70,9 +81,29 @@ app = FastAPI(title="GPU Tracker", lifespan=lifespan)
 
 _LOG_COUNTS: dict[str, int] = {}
 
+async def require_auth(x_worker_token: str = Header(..., alias="X-Worker-Token")) -> dict:
+    worker = registry.authenticate(x_worker_token)
+    if not worker:
+        raise HTTPException(status_code=401, detail="unknown token — visit /signup first")
+    if worker["status"] == "banned":
+        raise HTTPException(status_code=403, detail={"error": "worker is banned", "reason": worker["ban_reason"]})
+    return worker
+
+def require_admin(x_admin_token: str = Header(..., alias="X-Admin-Token")) -> None:
+    expected = os.getenv("ADMIN_TOKEN", "admin-secret-change-me")
+    if x_admin_token != expected:
+        raise HTTPException(status_code=403, detail="invalid admin token")
+
+@app.post("/signup", response_model=SignupResponse)
+async def signup(body: SignupRequest) -> SignupResponse:
+    res = registry.signup(body.name, body.email)
+    if not res:
+        raise HTTPException(status_code=400, detail="email already registered")
+    return SignupResponse(**res)
+
 
 @app.post("/register", response_model=RegisterResponse)
-async def register(body: RegisterRequest) -> RegisterResponse:
+async def register(body: RegisterRequest, worker: dict = Depends(require_auth)) -> RegisterResponse:
     wid = scheduler.register_worker(
         gpu_vram_mb=body.gpu_vram_mb,
         cpu_count=body.cpu_count,
@@ -81,7 +112,7 @@ async def register(body: RegisterRequest) -> RegisterResponse:
     )
     print(
         f"[register] worker_id={wid} gpu_vram_mb={body.gpu_vram_mb} "
-        f"cpu_count={body.cpu_count} host_label={body.host_label!r}",
+        f"cpu_count={body.cpu_count} host_label={body.host_label!r} status={worker['status']}",
         flush=True,
     )
     if body.hardware_report:
@@ -90,7 +121,10 @@ async def register(body: RegisterRequest) -> RegisterResponse:
 
 
 @app.post("/heartbeat", response_model=HeartbeatResponse)
-async def heartbeat(body: HeartbeatRequest) -> HeartbeatResponse:
+async def heartbeat(
+    body: HeartbeatRequest,
+    worker: dict = Depends(require_auth)
+) -> HeartbeatResponse:
     ok = scheduler.touch_heartbeat(body.worker_id, body.task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="unknown worker")
@@ -98,14 +132,31 @@ async def heartbeat(body: HeartbeatRequest) -> HeartbeatResponse:
 
 
 @app.get("/task/{worker_id}", response_model=TaskResponse)
-async def get_task(worker_id: str) -> TaskResponse:
+async def get_task(
+    worker_id: str,
+    worker: dict = Depends(require_auth)
+) -> TaskResponse:
     return scheduler.request_task(worker_id)
+
+
+def is_validation_failure(weights_bytes: bytes) -> bool:
+    try:
+        sd = torch.load(io.BytesIO(weights_bytes), map_location="cpu", weights_only=True)
+        for t in sd.values():
+            if t.dtype.is_floating_point:
+                if t.abs().sum().item() == 0.0:
+                    return True
+                break
+        return False
+    except Exception:
+        return True
 
 
 @app.post("/submit_weights")
 async def submit_weights(
     meta_json: str = Form(...),
     weights_file: UploadFile = File(...),
+    worker: dict = Depends(require_auth)
 ) -> JSONResponse:
     try:
         meta = SubmitWeightsMetadata.model_validate_json(meta_json)
@@ -115,6 +166,19 @@ async def submit_weights(
     weights_bytes = await weights_file.read()
     if not weights_bytes:
         raise HTTPException(status_code=400, detail="empty weights buffer")
+
+    # VALIDATION CHECK
+    failed = is_validation_failure(weights_bytes)
+    worker_id_real = worker["worker_id"] # Use the real worker_id from DB for the auth
+    
+    trust_weight = registry.get_trust_weight(worker_id_real)
+
+    if failed:
+        signal = registry.record_failure(worker_id_real)
+        return JSONResponse({"ok": False, "detail": "validation failed"}, status_code=400)
+    else:
+        signal = registry.record_success(worker_id_real)
+
     ok, msg = scheduler.submit_weights(
         meta.worker_id,
         meta.task_id,
@@ -124,6 +188,7 @@ async def submit_weights(
         shard_eval_acc=meta.shard_eval_acc,
         local_epochs_planned=meta.local_epochs_planned,
         local_epochs_completed=meta.local_epochs_completed,
+        trust_weight=trust_weight
     )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
@@ -136,7 +201,6 @@ async def submit_weights(
             "message": msg,
         }
 
-    # Print per-worker training metrics on the tracker terminal.
     if meta.train_loss_last is not None or meta.train_acc_running is not None or meta.shard_eval_acc is not None:
         print(
             f"[metrics] worker={meta.worker_id[:8]}… task={meta.task_id} "
@@ -149,6 +213,8 @@ async def submit_weights(
     body: dict[str, Any] = {"ok": True, "detail": msg, "checkpoint_dir": state_manager.checkpoint_dir()}
     if broadcast:
         body["aggregation"] = broadcast
+    if signal:
+        body["signal"] = signal
     return JSONResponse(body)
 
 
@@ -164,7 +230,6 @@ async def global_model() -> JSONResponse:
     if raw is None:
         raise HTTPException(status_code=404, detail="no global model yet")
     import base64
-
     return JSONResponse(
         {
             "round_no": state_manager.global_round(),
@@ -176,7 +241,10 @@ async def global_model() -> JSONResponse:
 
 
 @app.post("/log")
-async def log_event(body: LogEvent) -> JSONResponse:
+async def log_event(
+    body: LogEvent,
+    worker: dict = Depends(require_auth)
+) -> JSONResponse:
     key = body.worker_id
     _LOG_COUNTS[key] = _LOG_COUNTS.get(key, 0) + 1
     wid = body.worker_id[:8]
@@ -192,3 +260,25 @@ async def checkpoint(task_id: str) -> Response:
     if raw is None:
         raise HTTPException(status_code=404, detail="no checkpoint for task_id")
     return Response(content=raw, media_type="application/octet-stream")
+
+
+@app.post("/admin/ban")
+async def admin_ban(body: BanRequest, _: None = Depends(require_admin)) -> JSONResponse:
+    registry.ban_worker(body.worker_id, body.reason)
+    scheduler.orphan_task_for_worker(body.worker_id)
+    return JSONResponse({"banned": True, "worker_id": body.worker_id})
+
+
+@app.post("/admin/unban")
+async def admin_unban(body: UnbanRequest, _: None = Depends(require_admin)) -> JSONResponse:
+    registry.unban_worker(body.worker_id)
+    return JSONResponse({"unbanned": True, "worker_id": body.worker_id})
+
+
+@app.get("/admin/workers")
+async def admin_workers(_: None = Depends(require_admin)) -> JSONResponse:
+    workers = registry.get_all_workers()
+    # Mock credit balances since no ledger exists
+    for w in workers:
+        w["credit_balance"] = 100
+    return JSONResponse(workers)

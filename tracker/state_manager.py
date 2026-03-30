@@ -18,6 +18,7 @@ class TaskCheckpoint:
 
     weights_bytes: Optional[bytes] = None
     last_index: int = -1
+    trust_weight: float = 1.0
 
 
 @dataclass
@@ -74,11 +75,12 @@ class StateManager:
         with self._lock:
             return self._global.version_label
 
-    def update_task_checkpoint(self, task_id: str, weights_bytes: bytes, last_index: int) -> None:
+    def update_task_checkpoint(self, task_id: str, weights_bytes: bytes, last_index: int, trust_weight: float = 1.0) -> None:
         with self._lock:
             self._per_task.setdefault(task_id, TaskCheckpoint())
             self._per_task[task_id].weights_bytes = weights_bytes
             self._per_task[task_id].last_index = last_index
+            self._per_task[task_id].trust_weight = trust_weight
             try:
                 self._task_ckpt_path(task_id).write_bytes(weights_bytes)
             except OSError:
@@ -113,14 +115,14 @@ class StateManager:
                 return copy.deepcopy(self._global.global_weights_bytes)
             return None
 
-    def collect_shard_weights_for_fedavg(self, task_ids: List[str]) -> List[bytes]:
+    def collect_shard_weights_for_fedavg(self, task_ids: List[str]) -> List[Tuple[bytes, float]]:
         with self._lock:
-            out: List[bytes] = []
+            out: List[Tuple[bytes, float]] = []
             for tid in task_ids:
                 ckpt = self._per_task.get(tid)
                 if not ckpt or ckpt.weights_bytes is None:
                     raise ValueError(f"missing checkpoint for {tid}")
-                out.append(copy.deepcopy(ckpt.weights_bytes))
+                out.append((copy.deepcopy(ckpt.weights_bytes), ckpt.trust_weight))
             return out
 
     def reset_task_checkpoints(self, task_ids: List[str]) -> None:
