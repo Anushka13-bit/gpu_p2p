@@ -554,7 +554,7 @@ class Scheduler:
                 "node_registry": reg,
                 "training_stopped": self._training_stopped,
                 "stop_reason": self._stop_reason,
-                "best_test_acc": self._best_test_acc,
+                "best_val_acc": self._best_val_acc,
                 "rounds_without_improve": self._rounds_without_improve,
                 "stop_policy": {
                     "max_fed_rounds": self._max_fed_rounds,
