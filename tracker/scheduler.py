@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from shared.protocol import TaskAssignment, TaskResponse, TaskStatus
 
 from .aggregator import fedavg_state_dicts
-from .eval_utils import eval_global_fashion_mnist_test_acc
+from .eval_utils import eval_global_fashion_mnist_test_acc, eval_global_fashion_mnist_val_acc
 from .state_manager import StateManager
 
 
@@ -94,7 +94,7 @@ class Scheduler:
         self._earlystop_min_delta = max(0.0, _env_float("GPU_P2P_EARLYSTOP_MIN_DELTA", 0.1))
         self._training_stopped = False
         self._stop_reason: Optional[str] = None
-        self._best_test_acc: Optional[float] = None
+        self._best_val_acc: Optional[float] = None
         self._rounds_without_improve = 0
         # Latest per-worker per-task live progress (sent per epoch).
         self._progress: Dict[tuple[str, str], dict[str, Any]] = {}
@@ -303,22 +303,25 @@ class Scheduler:
         nbuf = len(buffers)
         merged = fedavg_state_dicts(buffers)
         next_round = self._state.global_round() + 1
+        val_acc: Optional[float] = None
         test_acc: Optional[float] = None
         try:
+            val_acc = float(eval_global_fashion_mnist_val_acc(merged, device="cpu"))
             test_acc = float(eval_global_fashion_mnist_test_acc(merged, device="cpu"))
         except Exception as e:
             print(f"[eval] failed: {e!r}", flush=True)
-        self._state.set_global_bytes(merged, next_round, test_acc=test_acc)
+        self._state.set_global_bytes(merged, next_round, val_acc=val_acc, test_acc=test_acc)
 
         completed_rounds = max(0, next_round - 1)
-        if test_acc is not None:
-            if self._best_test_acc is None:
-                self._best_test_acc = test_acc
+        # Early-stop is based on validation accuracy, not test accuracy.
+        if val_acc is not None:
+            if self._best_val_acc is None:
+                self._best_val_acc = val_acc
                 self._rounds_without_improve = 0
             else:
-                improvement = test_acc - self._best_test_acc
+                improvement = val_acc - self._best_val_acc
                 if improvement >= self._earlystop_min_delta:
-                    self._best_test_acc = test_acc
+                    self._best_val_acc = val_acc
                     self._rounds_without_improve = 0
                 else:
                     self._rounds_without_improve += 1
@@ -331,12 +334,12 @@ class Scheduler:
         if (
             (not self._training_stopped)
             and self._earlystop_patience > 0
-            and test_acc is not None
-            and self._best_test_acc is not None
+            and val_acc is not None
+            and self._best_val_acc is not None
             and self._rounds_without_improve >= self._earlystop_patience
         ):
             self._stop_training_locked(
-                "early-stop: no meaningful global test_acc improvement "
+                "early-stop: no meaningful global val_acc improvement "
                 f"for {self._rounds_without_improve} rounds "
                 f"(min_delta={self._earlystop_min_delta:.4f})"
             )
@@ -353,8 +356,10 @@ class Scheduler:
             f"[fedavg] averaged {nbuf} shard weight tensors (element-wise mean of float params) → {label}",
             flush=True,
         )
-        if test_acc is not None:
-            print(f"[eval] {label} fashion-mnist test_acc={test_acc:.2f}%", flush=True)
+        if val_acc is not None or test_acc is not None:
+            vs = f"{val_acc:.2f}%" if val_acc is not None else "n/a"
+            ts = f"{test_acc:.2f}%" if test_acc is not None else "n/a"
+            print(f"[eval] {label} fashion-mnist val_acc={vs}  test_acc={ts}", flush=True)
         if self._training_stopped and self._stop_reason:
             print(f"[training] terminal condition met; no further tasks will be scheduled ({self._stop_reason})", flush=True)
         return True, f"aggregated to {label}"
@@ -442,7 +447,7 @@ class Scheduler:
                 "heartbeat_timeout_sec": HEARTBEAT_TIMEOUT_SEC,
                 "training_stopped": self._training_stopped,
                 "stop_reason": self._stop_reason,
-                "best_test_acc": self._best_test_acc,
+                "best_val_acc": self._best_val_acc,
                 "rounds_without_improve": self._rounds_without_improve,
                 "stop_policy": {
                     "max_fed_rounds": self._max_fed_rounds,
@@ -470,9 +475,9 @@ class Scheduler:
             f"patience={snap.get('stop_policy', {}).get('earlystop_patience', 0) or 'disabled'}, "
             f"min_delta={snap.get('stop_policy', {}).get('earlystop_min_delta', 0.0):.4f})"
         )
-        if snap.get("best_test_acc") is not None:
+        if snap.get("best_val_acc") is not None:
             lines.append(
-                f"  best_test_acc={snap['best_test_acc']:.2f}%  rounds_without_improve={snap.get('rounds_without_improve', 0)}"
+                f"  best_val_acc={snap['best_val_acc']:.2f}%  rounds_without_improve={snap.get('rounds_without_improve', 0)}"
             )
         if snap.get("training_stopped") and snap.get("stop_reason"):
             lines.append(f"  stop_reason={snap['stop_reason']}")

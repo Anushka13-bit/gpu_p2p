@@ -138,7 +138,7 @@ async def submit_weights(
             "message": msg,
             "training_stopped": hs.get("training_stopped", False),
             "stop_reason": hs.get("stop_reason"),
-            "best_test_acc": hs.get("best_test_acc"),
+            "best_val_acc": hs.get("best_val_acc"),
         }
 
     # Intentionally do not print any per-shard training metrics on the tracker.
@@ -151,7 +151,7 @@ async def submit_weights(
         "checkpoint_dir": state_manager.checkpoint_dir(),
         "training_stopped": hs.get("training_stopped", False),
         "stop_reason": hs.get("stop_reason"),
-        "best_test_acc": hs.get("best_test_acc"),
+        "best_val_acc": hs.get("best_val_acc"),
     }
     if broadcast:
         body["aggregation"] = broadcast
@@ -178,6 +178,7 @@ async def global_model() -> JSONResponse:
             "version_label": state_manager.global_version_label(),
             "weights_b64": base64.b64encode(raw).decode("ascii"),
             "checkpoint_dir": state_manager.checkpoint_dir(),
+            "last_val_acc": snap.get("last_val_acc"),
             "last_test_acc": snap.get("last_test_acc"),
         }
     )

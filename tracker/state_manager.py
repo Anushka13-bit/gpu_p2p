@@ -27,6 +27,7 @@ class GlobalState:
     round_no: int = 1
     global_weights_bytes: Optional[bytes] = None
     version_label: str = "Global Model v1"
+    last_val_acc: Optional[float] = None
     last_test_acc: Optional[float] = None
 
 
@@ -57,11 +58,19 @@ class StateManager:
         with self._lock:
             return copy.deepcopy(self._global.global_weights_bytes) if self._global.global_weights_bytes else None
 
-    def set_global_bytes(self, weights_bytes: bytes, next_round: int, test_acc: Optional[float] = None) -> None:
+    def set_global_bytes(
+        self,
+        weights_bytes: bytes,
+        next_round: int,
+        *,
+        val_acc: Optional[float] = None,
+        test_acc: Optional[float] = None,
+    ) -> None:
         with self._lock:
             self._global.global_weights_bytes = weights_bytes
             self._global.round_no = next_round
             self._global.version_label = f"Global Model v{next_round}"
+            self._global.last_val_acc = float(val_acc) if val_acc is not None else None
             self._global.last_test_acc = float(test_acc) if test_acc is not None else None
             try:
                 self._global_path(next_round).write_bytes(weights_bytes)
@@ -136,6 +145,7 @@ class StateManager:
                 "round_no": self._global.round_no,
                 "version_label": self._global.version_label,
                 "has_global_weights": self._global.global_weights_bytes is not None,
+                "last_val_acc": self._global.last_val_acc,
                 "last_test_acc": self._global.last_test_acc,
                 "tasks": {
                     tid: {
