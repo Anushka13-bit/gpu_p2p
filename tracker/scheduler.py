@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -23,6 +24,26 @@ SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
 HEARTBEAT_TIMEOUT_SEC = 12.0
 REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
 WATCHDOG_CHECK_INTERVAL_SEC = 3.0
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _shard_bounds(idx: int) -> Tuple[int, int]:
@@ -68,6 +89,13 @@ class Scheduler:
         self._lock = RLock()
         self._workers: Dict[str, WorkerRecord] = {}
         self._tasks: Dict[str, TaskShard] = {}
+        self._max_fed_rounds = max(0, _env_int("GPU_P2P_MAX_FED_ROUNDS", 0))
+        self._earlystop_patience = max(0, _env_int("GPU_P2P_EARLYSTOP_PATIENCE", 3))
+        self._earlystop_min_delta = max(0.0, _env_float("GPU_P2P_EARLYSTOP_MIN_DELTA", 0.1))
+        self._training_stopped = False
+        self._stop_reason: Optional[str] = None
+        self._best_test_acc: Optional[float] = None
+        self._rounds_without_improve = 0
         # Latest per-worker per-task live progress (sent per epoch).
         self._progress: Dict[tuple[str, str], dict[str, Any]] = {}
         for i in range(NUM_SHARDS):
@@ -75,6 +103,24 @@ class Scheduler:
             s, e = _shard_bounds(i)
             self._tasks[tid] = TaskShard(task_id=tid, image_start=s, image_end=e)
             self._state.ensure_task_slot(tid)
+        print(
+            "[scheduler] stop policy: "
+            f"max_fed_rounds={self._max_fed_rounds or 'unlimited'} "
+            f"earlystop_patience={self._earlystop_patience or 'disabled'} "
+            f"earlystop_min_delta={self._earlystop_min_delta:.4f}",
+            flush=True,
+        )
+
+    def _stop_training_locked(self, reason: str) -> None:
+        if self._training_stopped:
+            return
+        self._training_stopped = True
+        self._stop_reason = reason
+        print(f"[training] stop requested: {reason}", flush=True)
+
+    def is_training_stopped(self) -> bool:
+        with self._lock:
+            return self._training_stopped
 
     def update_progress(
         self,
@@ -172,6 +218,9 @@ class Scheduler:
             if worker_id not in self._workers:
                 return TaskResponse(has_task=False, task=None, global_model_bytes_b64=None)
 
+            if self._training_stopped:
+                return TaskResponse(has_task=False, task=None, global_model_bytes_b64=None)
+
             existing = self._worker_active_task(worker_id)
             if existing:
                 return self._build_task_response_locked(existing, existing.status)
@@ -261,11 +310,43 @@ class Scheduler:
             print(f"[eval] failed: {e!r}", flush=True)
         self._state.set_global_bytes(merged, next_round, test_acc=test_acc)
 
-        for t in self._tasks.values():
-            t.status = TaskStatus.PENDING
-            t.assigned_worker = None
-            t.last_reported_index = -1
-        self._state.reset_task_checkpoints(list(self._tasks.keys()))
+        completed_rounds = max(0, next_round - 1)
+        if test_acc is not None:
+            if self._best_test_acc is None:
+                self._best_test_acc = test_acc
+                self._rounds_without_improve = 0
+            else:
+                improvement = test_acc - self._best_test_acc
+                if improvement >= self._earlystop_min_delta:
+                    self._best_test_acc = test_acc
+                    self._rounds_without_improve = 0
+                else:
+                    self._rounds_without_improve += 1
+
+        if self._max_fed_rounds > 0 and completed_rounds >= self._max_fed_rounds:
+            self._stop_training_locked(
+                f"max_fed_rounds reached ({completed_rounds}/{self._max_fed_rounds})"
+            )
+
+        if (
+            (not self._training_stopped)
+            and self._earlystop_patience > 0
+            and test_acc is not None
+            and self._best_test_acc is not None
+            and self._rounds_without_improve >= self._earlystop_patience
+        ):
+            self._stop_training_locked(
+                "early-stop: no meaningful global test_acc improvement "
+                f"for {self._rounds_without_improve} rounds "
+                f"(min_delta={self._earlystop_min_delta:.4f})"
+            )
+
+        if not self._training_stopped:
+            for t in self._tasks.values():
+                t.status = TaskStatus.PENDING
+                t.assigned_worker = None
+                t.last_reported_index = -1
+            self._state.reset_task_checkpoints(list(self._tasks.keys()))
 
         label = self._state.global_version_label()
         print(
@@ -274,6 +355,8 @@ class Scheduler:
         )
         if test_acc is not None:
             print(f"[eval] {label} fashion-mnist test_acc={test_acc:.2f}%", flush=True)
+        if self._training_stopped and self._stop_reason:
+            print(f"[training] terminal condition met; no further tasks will be scheduled ({self._stop_reason})", flush=True)
         return True, f"aggregated to {label}"
 
     def worker_current_shard(self, worker_id: str) -> Optional[str]:
@@ -357,6 +440,15 @@ class Scheduler:
                 "active_nodes": active,
                 "nodes_on_shard": on_task,
                 "heartbeat_timeout_sec": HEARTBEAT_TIMEOUT_SEC,
+                "training_stopped": self._training_stopped,
+                "stop_reason": self._stop_reason,
+                "best_test_acc": self._best_test_acc,
+                "rounds_without_improve": self._rounds_without_improve,
+                "stop_policy": {
+                    "max_fed_rounds": self._max_fed_rounds,
+                    "earlystop_patience": self._earlystop_patience,
+                    "earlystop_min_delta": self._earlystop_min_delta,
+                },
                 "nodes": rows,
                 "task_table": task_prog,
             }
@@ -370,6 +462,20 @@ class Scheduler:
             f"nodes_with_assigned_shard={snap['nodes_on_shard']}",
             f"  data: {TOTAL_IMAGES} MNIST indices → {NUM_SHARDS} shards × {SHARD_SIZE} rows (distinct workers take distinct pending shards)",
         ]
+        stop_state = "STOPPED" if snap.get("training_stopped") else "running"
+        lines.append(
+            "  training="
+            f"{stop_state} "
+            f"policy(max_rounds={snap.get('stop_policy', {}).get('max_fed_rounds', 0) or 'unlimited'}, "
+            f"patience={snap.get('stop_policy', {}).get('earlystop_patience', 0) or 'disabled'}, "
+            f"min_delta={snap.get('stop_policy', {}).get('earlystop_min_delta', 0.0):.4f})"
+        )
+        if snap.get("best_test_acc") is not None:
+            lines.append(
+                f"  best_test_acc={snap['best_test_acc']:.2f}%  rounds_without_improve={snap.get('rounds_without_improve', 0)}"
+            )
+        if snap.get("training_stopped") and snap.get("stop_reason"):
+            lines.append(f"  stop_reason={snap['stop_reason']}")
         for r in snap["nodes"]:
             shard = r["current_shard"] or "—"
             lbl = repr(r["host_label"])[1:-1] if r["host_label"] else "—"
@@ -442,6 +548,15 @@ class Scheduler:
                 "workers": len(self._workers),
                 "worker_roster": roster,
                 "node_registry": reg,
+                "training_stopped": self._training_stopped,
+                "stop_reason": self._stop_reason,
+                "best_test_acc": self._best_test_acc,
+                "rounds_without_improve": self._rounds_without_improve,
+                "stop_policy": {
+                    "max_fed_rounds": self._max_fed_rounds,
+                    "earlystop_patience": self._earlystop_patience,
+                    "earlystop_min_delta": self._earlystop_min_delta,
+                },
                 "task_table": tasks,
                 **base,
             }

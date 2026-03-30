@@ -131,10 +131,14 @@ async def submit_weights(
 
     broadcast: dict[str, Any] | None = None
     if msg.startswith("aggregated"):
+        hs = scheduler.health_snapshot()
         broadcast = {
             "round_no": state_manager.global_round(),
             "version": state_manager.global_version_label(),
             "message": msg,
+            "training_stopped": hs.get("training_stopped", False),
+            "stop_reason": hs.get("stop_reason"),
+            "best_test_acc": hs.get("best_test_acc"),
         }
 
     # Print per-worker training metrics on the tracker terminal.
@@ -147,7 +151,15 @@ async def submit_weights(
             flush=True,
         )
 
-    body: dict[str, Any] = {"ok": True, "detail": msg, "checkpoint_dir": state_manager.checkpoint_dir()}
+    hs = scheduler.health_snapshot()
+    body: dict[str, Any] = {
+        "ok": True,
+        "detail": msg,
+        "checkpoint_dir": state_manager.checkpoint_dir(),
+        "training_stopped": hs.get("training_stopped", False),
+        "stop_reason": hs.get("stop_reason"),
+        "best_test_acc": hs.get("best_test_acc"),
+    }
     if broadcast:
         body["aggregation"] = broadcast
     return JSONResponse(body)
