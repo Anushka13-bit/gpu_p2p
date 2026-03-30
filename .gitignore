@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS / IDE
+.DS_Store
+.DS_Store?
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data & checkpoints (downloaded at runtime)
+data/
+*.pt
+*.pth
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# PyTorch / Jupyter
+.ipynb_checkpoints/
+*.pkl
+
+# Logs / coverage
+*.log
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Cursor / local
+.cursor/
