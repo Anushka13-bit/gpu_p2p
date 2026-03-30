@@ -24,42 +24,61 @@ const TOOLTIP_STYLE = {
  * val_acc / test_acc are null until the first FedAvg round completes — we skip
  * null entries so recharts draws a gap rather than a flat line at 0.
  */
-export function AccuracyChart({ data }) {
-  // Filter to only points where at least one accuracy value is present
-  const filtered = data.filter(d => d.val_acc != null || d.test_acc != null);
+export function GpuSpecsChart({ data }) {
+  const filtered = data.filter(d => d.gpu_vram_gb != null || d.cpu_total != null);
   if (filtered.length === 0) return null;
 
   return (
     <ResponsiveContainer width="100%" height={220}>
-      <AreaChart data={filtered} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-        <defs>
-          <linearGradient id="valGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.35} />
-            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}    />
-          </linearGradient>
-          <linearGradient id="testGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%"  stopColor="#10b981" stopOpacity={0.30} />
-            <stop offset="95%" stopColor="#10b981" stopOpacity={0}    />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+      <LineChart data={filtered} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
         <XAxis dataKey="label" tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-        <YAxis domain={['auto', 'auto']} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} unit="%" />
-        <Tooltip {...TOOLTIP_STYLE} formatter={(v) => v != null ? [`${v.toFixed(2)}%`] : ['—']} />
+        <YAxis
+          yAxisId="left"
+          tick={{ fill: '#475569', fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          width={44}
+          tickFormatter={(v) => `${v.toFixed(1)}GB`}
+        />
+        <YAxis
+          yAxisId="right"
+          orientation="right"
+          tick={{ fill: '#475569', fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          width={34}
+          allowDecimals={false}
+        />
+        <Tooltip
+          {...TOOLTIP_STYLE}
+          formatter={(v, name) => {
+            if (v == null) return ['—', name];
+            if (name === 'Total VRAM') return [`${Number(v).toFixed(2)} GB`, name];
+            return [`${Number(v)}`, name];
+          }}
+        />
         <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
-        <Area
-          type="monotone" dataKey="val_acc"  name="Val Acc"
-          stroke="#6366f1" strokeWidth={2} fill="url(#valGrad)"
-          dot={false} activeDot={{ r: 4, fill: '#6366f1' }}
-          connectNulls={false}
+        <Line
+          yAxisId="left"
+          type="monotone"
+          dataKey="gpu_vram_gb"
+          name="Total VRAM"
+          stroke="#06b6d4"
+          strokeWidth={2.5}
+          dot={false}
+          activeDot={{ r: 4, fill: '#06b6d4' }}
         />
-        <Area
-          type="monotone" dataKey="test_acc" name="Test Acc"
-          stroke="#10b981" strokeWidth={2} fill="url(#testGrad)"
-          dot={false} activeDot={{ r: 4, fill: '#10b981' }}
-          connectNulls={false}
+        <Line
+          yAxisId="right"
+          type="monotone"
+          dataKey="cpu_total"
+          name="Total CPU"
+          stroke="#f59e0b"
+          strokeWidth={2.5}
+          dot={false}
+          activeDot={{ r: 4, fill: '#f59e0b' }}
         />
-      </AreaChart>
+      </LineChart>
     </ResponsiveContainer>
   );
 }
@@ -69,6 +88,21 @@ export function AccuracyChart({ data }) {
  * data: Array<{ label, active_nodes: number }>
  */
 export function ActiveNodesChart({ data }) {
+  const maxVal = Math.max(0, ...(data || []).map(d => Number(d?.active_nodes) || 0));
+  if (maxVal === 0) {
+    return (
+      <div style={{
+        height: 180,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: 'var(--text-muted)',
+        fontSize: 12,
+      }}>
+        No active nodes yet (waiting for worker heartbeats)
+      </div>
+    );
+  }
   return (
     <ResponsiveContainer width="100%" height={180}>
       <BarChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
@@ -143,7 +177,6 @@ export function RoundsChart({ data }) {
   return (
     <ResponsiveContainer width="100%" height={180}>
       <LineChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
         <XAxis dataKey="label" tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
         <Tooltip {...TOOLTIP_STYLE} />
@@ -175,7 +208,6 @@ export function ShardProgressChart({ taskTable }) {
   return (
     <ResponsiveContainer width="100%" height={Math.max(200, barData.length * 52)}>
       <BarChart data={barData} margin={{ top: 8, right: 16, left: -10, bottom: 0 }} layout="vertical">
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
         <XAxis
           type="number" domain={[0, 100]}
           tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} unit="%"
@@ -194,5 +226,126 @@ export function ShardProgressChart({ taskTable }) {
         <Bar dataKey="eval_acc"  name="Eval Acc %" fill="#10b981" radius={[0, 4, 4, 0]} barSize={12} />
       </BarChart>
     </ResponsiveContainer>
+  );
+}
+
+/**
+ * Data shard "eaten" progress bar
+ * - Single horizontal bar representing 100% of the dataset.
+ * - Split into segments (one per shard) sized by that shard's range length.
+ * - Each segment fills with shard progress_pct; shows assigned worker + range.
+ *
+ * taskTable: Record<string, { range:[start,end], progress_pct:number, worker:string|null, status:string }>
+ */
+export function DataShardBar({ taskTable }) {
+  const shards = Object.entries(taskTable || {})
+    .map(([tid, info]) => ({
+      tid,
+      start: Array.isArray(info?.range) ? Number(info.range[0]) : 0,
+      end: Array.isArray(info?.range) ? Number(info.range[1]) : 0,
+      progress: typeof info?.progress_pct === 'number' ? info.progress_pct : Number(info?.progress_pct) || 0,
+      worker: info?.worker || '—',
+      status: info?.status || 'PENDING',
+    }))
+    .filter(s => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
+    .sort((a, b) => a.start - b.start);
+
+  if (shards.length === 0) return null;
+
+  const total = shards.reduce((acc, s) => acc + (s.end - s.start), 0) || 1;
+  const statusColor = (st) => {
+    switch (st) {
+      case 'COMPLETED': return '#10b981';
+      case 'IN_PROGRESS': return '#3b82f6';
+      case 'ASSIGNED': return '#6366f1';
+      case 'ORPHANED': return '#ef4444';
+      case 'PENDING':
+      default: return '#475569';
+    }
+  };
+
+  return (
+    <div>
+      <div style={{
+        display: 'flex',
+        width: '100%',
+        height: 28,
+        borderRadius: 10,
+        overflow: 'hidden',
+        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'rgba(255,255,255,0.03)',
+      }}>
+        {shards.map((s, i) => {
+          const segPct = ((s.end - s.start) / total) * 100;
+          const fill = Math.max(0, Math.min(100, s.progress || 0));
+          const base = statusColor(s.status);
+          return (
+            <div
+              key={s.tid}
+              title={`${s.worker} • ${s.start}-${s.end} • ${fill.toFixed(1)}%`}
+              style={{
+                width: `${segPct}%`,
+                position: 'relative',
+                borderRight: i === shards.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.06)',
+              }}
+            >
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.02)' }} />
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                width: `${fill}%`,
+                background: `${base}cc`,
+                boxShadow: `0 0 16px ${base}55 inset`,
+              }} />
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{
+        marginTop: 10,
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+        gap: 10,
+      }}>
+        {shards.map((s) => {
+          const fill = Math.max(0, Math.min(100, s.progress || 0));
+          const base = statusColor(s.status);
+          const shortWorker = s.worker && s.worker !== '—' ? String(s.worker).slice(0, 12) : '—';
+          return (
+            <div key={`${s.tid}-meta`} style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              padding: '6px 10px',
+              borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.06)',
+              background: 'rgba(255,255,255,0.02)',
+              fontSize: 12,
+              color: 'var(--text-secondary)',
+            }}>
+              <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-primary)' }}>
+                {s.start}–{s.end}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ color: base, fontWeight: 700 }}>{fill.toFixed(0)}%</span>
+                <span style={{
+                  padding: '2px 8px',
+                  borderRadius: 99,
+                  background: `${base}1a`,
+                  color: base,
+                  border: `1px solid ${base}33`,
+                  fontFamily: 'JetBrains Mono, monospace',
+                  fontSize: 11,
+                }}>
+                  {shortWorker}
+                </span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

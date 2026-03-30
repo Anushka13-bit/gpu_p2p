@@ -5,10 +5,10 @@ import SectionCard from './components/SectionCard';
 import ShardTable from './components/ShardTable';
 import WorkerRoster from './components/WorkerRoster';
 import {
-  AccuracyChart,
+  GpuSpecsChart,
   ActiveNodesChart,
   TaskStatusChart,
-  ShardProgressChart,
+  DataShardBar,
 } from './components/Charts';
 import { fmtAcc } from './utils/fmt';
 
@@ -98,23 +98,6 @@ function OfflinePlaceholder({ height = 180 }) {
   );
 }
 
-/* ── Skeleton rows for the history table ─────────────────────────────────── */
-function SkeletonRows({ cols = 7, rows = 4 }) {
-  return (
-    <>
-      {Array.from({ length: rows }).map((_, r) => (
-        <tr key={r}>
-          {Array.from({ length: cols }).map((_, c) => (
-            <td key={c} style={{ padding: '8px 14px' }}>
-              <div className="skeleton" style={{ height: 12, width: c === 0 ? 70 : 40 }} />
-            </td>
-          ))}
-        </tr>
-      ))}
-    </>
-  );
-}
-
 /* ── Main App ──────────────────────────────────────────────────────────────── */
 export default function App() {
   const { snapshot, metricHistory, connectionStatus, lastUpdated } = useTrackerData();
@@ -134,40 +117,6 @@ export default function App() {
 
   return (
     <div className="app-root">
-      {/* ── Sidebar ── */}
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <div className="logo-icon">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-            </svg>
-          </div>
-          <div>
-            <p className="logo-title">GPU P2P</p>
-            <p className="logo-sub">Fed Learning</p>
-          </div>
-        </div>
-
-        <nav className="sidebar-nav">
-          {[
-            { icon: Icon.chart, label: 'Overview' },
-            { icon: Icon.brain, label: 'Training' },
-            { icon: Icon.shard, label: 'Shards' },
-            { icon: Icon.workers, label: 'Workers' },
-            { icon: Icon.history, label: 'History' },
-          ].map(({ icon, label }) => (
-            <a key={label} className="nav-item" href="#" data-active={label === 'Overview'}>
-              {icon}
-              <span>{label}</span>
-            </a>
-          ))}
-        </nav>
-
-        <div className="sidebar-footer">
-          <ConnectionBadge status={connectionStatus} lastUpdated={lastUpdated} />
-        </div>
-      </aside>
-
       {/* ── Main ── */}
       <main className="main-content">
         {/* Top bar */}
@@ -272,16 +221,16 @@ export default function App() {
             />
           </div>
 
-          {/* ── Charts row 1: Accuracy + Task Status ── */}
+          {/* ── Charts row 1: GPU Specs + Task Status ── */}
           <div className="charts-row two-col">
             <SectionCard
-              title="Accuracy over Time"
-              subtitle="Val & test accuracy after each FedAvg round (null until first aggregation)"
-              icon={Icon.brain}
-              accent="#6366f1"
+              title="GPU Specs over Time"
+              subtitle="Total active VRAM (GB) and CPU cores across active nodes"
+              icon={Icon.cpu}
+              accent="#06b6d4"
             >
               {online && metricHistory.length > 0
-                ? <AccuracyChart data={metricHistory} />
+                ? <GpuSpecsChart data={metricHistory} />
                 : <OfflinePlaceholder />}
             </SectionCard>
 
@@ -297,29 +246,30 @@ export default function App() {
             </SectionCard>
           </div>
 
-          {/* ── Charts row 2: Active Nodes ── */}
-          <SectionCard
-            title="Active Nodes over Time"
-            subtitle="Workers with heartbeat within timeout window"
-            icon={Icon.nodes}
-            accent="#3b82f6"
-          >
-            {online && metricHistory.length > 0
-              ? <ActiveNodesChart data={metricHistory} />
-              : <OfflinePlaceholder />}
-          </SectionCard>
+          {/* ── Charts row 2: Active Nodes + Data Parallelism ── */}
+          <div className="charts-row two-col">
+            <SectionCard
+              title="Active Nodes over Time"
+              subtitle="Workers with heartbeat within timeout window"
+              icon={Icon.nodes}
+              accent="#3b82f6"
+            >
+              {online && metricHistory.length > 0
+                ? <ActiveNodesChart data={metricHistory} />
+                : <OfflinePlaceholder />}
+            </SectionCard>
 
-          {/* ── Shard progress bar chart ── */}
-          <SectionCard
-            title="Shard Progress & Eval Accuracy"
-            subtitle="Per-shard training progress % and eval accuracy from registry_snapshot"
-            icon={Icon.shard}
-            accent="#ec4899"
-          >
-            {online && totalShards > 0
-              ? <ShardProgressChart taskTable={taskTable} />
-              : <OfflinePlaceholder height={220} />}
-          </SectionCard>
+            <SectionCard
+              title="Data Shard Progress"
+              subtitle="One bar = 100% of dataset; segments fill as each worker eats its shard"
+              icon={Icon.shard}
+              accent="#ec4899"
+            >
+              {online && totalShards > 0
+                ? <DataShardBar taskTable={taskTable} />
+                : <OfflinePlaceholder height={220} />}
+            </SectionCard>
+          </div>
 
           {/* ── Shard task table ── */}
           <SectionCard
@@ -333,11 +283,7 @@ export default function App() {
             {online && totalShards > 0
               ? <ShardTable taskTable={taskTable} />
               : (
-                <div style={{ color: 'var(--text-muted)', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div className="skeleton" style={{ height: 32, borderRadius: 8 }} />
-                  <div className="skeleton" style={{ height: 32, borderRadius: 8 }} />
-                  <div className="skeleton" style={{ height: 32, borderRadius: 8 }} />
-                </div>
+                <OfflinePlaceholder height={140} />
               )}
           </SectionCard>
 
@@ -353,11 +299,7 @@ export default function App() {
             {online && nodes.length > 0
               ? <WorkerRoster nodes={nodes} />
               : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px,1fr))', gap: 12 }}>
-                  {[1, 2, 3].map(i => (
-                    <div key={i} className="skeleton" style={{ height: 130, borderRadius: 12 }} />
-                  ))}
-                </div>
+                <OfflinePlaceholder height={160} />
               )}
           </SectionCard>
 
@@ -368,22 +310,22 @@ export default function App() {
             icon={Icon.history}
             accent="#6366f1"
           >
-            <div style={{ overflowX: 'auto' }}>
-              <table className="history-table">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Round</th>
-                    <th>Val Acc</th>
-                    <th>Test Acc</th>
-                    <th>Active Nodes</th>
-                    <th>Completed</th>
-                    <th>In Progress</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {metricHistory.length > 0
-                    ? [...metricHistory].reverse().slice(0, 20).map((row, i) => (
+            {metricHistory.length > 0 ? (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="history-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Round</th>
+                      <th>Val Acc</th>
+                      <th>Test Acc</th>
+                      <th>Active Nodes</th>
+                      <th>Completed</th>
+                      <th>In Progress</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...metricHistory].reverse().slice(0, 20).map((row, i) => (
                       <tr key={i} style={{ opacity: Math.max(0.45, 1 - i * 0.035) }}>
                         <td className="mono">{row.label}</td>
                         <td className="mono">v{row.round_no}</td>
@@ -393,14 +335,15 @@ export default function App() {
                         <td style={{ color: '#10b981' }}>{row.completed}</td>
                         <td style={{ color: '#3b82f6' }}>{row.in_progress}</td>
                       </tr>
-                    ))
-                    : <SkeletonRows />}
-                </tbody>
-              </table>
-            </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <OfflinePlaceholder height={140} />
+            )}
           </SectionCard>
 
-          <div style={{ height: 40 }} />
         </div>
       </main>
     </div>

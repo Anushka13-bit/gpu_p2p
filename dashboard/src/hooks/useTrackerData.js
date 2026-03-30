@@ -87,6 +87,11 @@ export function useTrackerData() {
   const pushHistoryPoint = useCallback((snap) => {
     const now = Date.now();
     const tt = snap.taskTable;
+    const timeout = snap.nodeRegistry?.heartbeat_timeout_sec ?? 12;
+    const nodes = Array.isArray(snap.nodes) ? snap.nodes : [];
+    const activeNodes = nodes.filter(n => (n?.last_seen_age_sec ?? Number.POSITIVE_INFINITY) <= timeout);
+    const gpuVramMbTotal = activeNodes.reduce((acc, n) => acc + (Number(n?.gpu_vram_mb) || 0), 0);
+    const cpuTotal = activeNodes.reduce((acc, n) => acc + (Number(n?.cpu_count) || 0), 0);
     const point = {
       t: now,
       label:        new Date(now).toLocaleTimeString(),
@@ -94,6 +99,8 @@ export function useTrackerData() {
       test_acc:     snap.last_test_acc,
       round_no:     snap.round_no,
       active_nodes: snap.nodeRegistry.active_nodes,
+      gpu_vram_gb:  gpuVramMbTotal / 1024.0,
+      cpu_total:    cpuTotal,
       completed:    Object.values(tt).filter(t => t.status === 'COMPLETED').length,
       in_progress:  Object.values(tt).filter(t => t.status === 'IN_PROGRESS').length,
     };
