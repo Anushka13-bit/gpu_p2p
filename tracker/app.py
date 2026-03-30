@@ -15,6 +15,8 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from pydantic import BaseModel, Field
+
 from shared.protocol import (
     HealthResponse,
     HeartbeatRequest,
@@ -72,6 +74,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="GPU Tracker", lifespan=lifespan)
 
 _LOG_COUNTS: dict[str, int] = {}
+
+
+class ResetSessionRequest(BaseModel):
+    """Same secret as POST /register ``password`` (JOIN_PASSWORD)."""
+
+    password: str = Field(..., min_length=1)
 
 
 def _require_valid_ticket(worker_id: str, ticket: str) -> None:
@@ -178,6 +186,14 @@ async def submit_weights(
 async def health() -> HealthResponse:
     snap = scheduler.health_snapshot()
     return HealthResponse(status="ok", round_no=snap.get("round_no", 1), tasks=snap)
+
+
+@app.post("/admin/reset_session")
+async def reset_session(body: ResetSessionRequest) -> JSONResponse:
+    """Start a new federated run without restarting uvicorn."""
+    if body.password != JOIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="invalid password")
+    return JSONResponse(scheduler.reset_session())
 
 
 @app.get("/registry")

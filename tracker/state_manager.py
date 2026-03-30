@@ -166,6 +166,18 @@ class StateManager:
             for tid in task_ids:
                 self._per_task[tid] = TaskCheckpoint()
 
+    def reset_for_new_session(self, task_ids: List[str]) -> None:
+        """
+        Clear global model + per-shard checkpoints for a new federated run.
+
+        Next assignment will call ensure_initial_global() and get a fresh seeded v1 model.
+        """
+        with self._lock:
+            self._global = GlobalState()
+            self._per_task.clear()
+            for tid in task_ids:
+                self._per_task[tid] = TaskCheckpoint()
+
     def snapshot(self) -> dict:
         with self._lock:
             return {

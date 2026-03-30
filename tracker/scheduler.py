@@ -125,6 +125,33 @@ class Scheduler:
         with self._lock:
             return self._training_stopped
 
+    def reset_session(self) -> dict[str, Any]:
+        """
+        Start a new training session on this tracker process: shards → PENDING,
+        training gate reopened, global model and checkpoints cleared, roster cleared.
+
+        Workers must register again (new worker_id + ticket).
+        """
+        with self._lock:
+            self._training_stopped = False
+            self._stop_reason = None
+            self._best_val_acc = None
+            self._rounds_without_improve = 0
+            self._progress.clear()
+            self._workers.clear()
+            for t in self._tasks.values():
+                t.status = TaskStatus.PENDING
+                t.assigned_worker = None
+                t.last_heartbeat = 0.0
+                t.last_reported_index = -1
+                t.last_eval_acc = None
+                t.last_epochs_completed = None
+                t.last_epochs_planned = None
+            tids = list(self._tasks.keys())
+            self._state.reset_for_new_session(tids)
+        print("[scheduler] session reset: shards PENDING, training_stopped cleared, workers cleared", flush=True)
+        return {"ok": True, "shards": tids}
+
     def update_progress(
         self,
         worker_id: str,
