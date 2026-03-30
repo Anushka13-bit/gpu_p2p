@@ -8,8 +8,8 @@ Run tracker first:
 Then:
   PYTHONPATH=. python mock_worker.py --tracker http://127.0.0.1:8000
 
-By default the mock stops after the first FedAvg round (`--max-fed-rounds 1`).
-Use `--max-fed-rounds 0` for unlimited rounds.
+By default the mock keeps running across rounds (`--max-fed-rounds 0`).
+Use `--max-fed-rounds N` to stop after N FedAvg aggregations *this worker observes*.
 
 Simulate death mid-shard (orphan → reassignment):
   PYTHONPATH=. python mock_worker.py --tracker http://127.0.0.1:8000 --die-after-first-round
@@ -36,11 +36,13 @@ from worker.train_utils import build_mnist_base_10k, train_shard_batch_loop
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tracker", default="http://127.0.0.1:8000")
-    parser.add_argument("--steps", type=int, default=50)
+    # One shard is 2000 samples; at batch_size=64 that's ~32 batches/epoch.
+    # For 15 epochs, you want >= 480 batches; default gives a bit of slack.
+    parser.add_argument("--steps", type=int, default=600)
     parser.add_argument(
         "--local-epochs",
         type=int,
-        default=3,
+        default=15,
         help="Local epochs over the assigned shard per submit window (CNN will train multiple passes).",
     )
     parser.add_argument(
@@ -59,7 +61,7 @@ def main() -> None:
     parser.add_argument(
         "--max-fed-rounds",
         type=int,
-        default=1,
+        default=0,
         help="Stop after this many FedAvg aggregations (0 = unlimited).",
     )
     args = parser.parse_args()
@@ -95,6 +97,8 @@ def main() -> None:
 
     try:
         idle_spins = 0
+        # Number of aggregation events this worker *observed* (it only sees "aggregation"
+        # when it submits the final shard that completes the round).
         fed_rounds_completed = 0
         while idle_spins < 120:
             tr = client.request_task(worker_id)
