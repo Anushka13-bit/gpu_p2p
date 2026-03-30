@@ -164,6 +164,12 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok", round_no=snap.get("round_no", 1), tasks=snap)
 
 
+@app.get("/registry")
+async def registry() -> JSONResponse:
+    """Node registry snapshot for dashboards."""
+    return JSONResponse(scheduler.registry_snapshot())
+
+
 @app.get("/global_model")
 async def global_model() -> JSONResponse:
     raw = state_manager.get_global_bytes()
