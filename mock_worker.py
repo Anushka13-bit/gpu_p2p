@@ -38,9 +38,15 @@ def main() -> None:
     parser.add_argument("--tracker", default="http://127.0.0.1:8000")
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument(
+        "--local-epochs",
+        type=int,
+        default=3,
+        help="Local epochs over the assigned shard per submit window (CNN will train multiple passes).",
+    )
+    parser.add_argument(
         "--heartbeat-sec",
         type=float,
-        default=30.0,
+        default=15.0,
         help="POST /heartbeat interval while running (tracker timeout must be larger).",
     )
     parser.add_argument(
@@ -131,6 +137,7 @@ def main() -> None:
                     resume_next,
                     device,
                     max_steps=args.steps,
+                    local_epochs=args.local_epochs,
                     verbose=not args.quiet_training,
                     log_prefix=log_prefix,
                 )

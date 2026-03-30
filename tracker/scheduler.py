@@ -18,9 +18,9 @@ from .state_manager import StateManager
 TOTAL_IMAGES = 10_000
 NUM_SHARDS = 5
 SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
-# Must exceed worker heartbeat interval (default 30s) so brief jitter does not orphan tasks.
-HEARTBEAT_TIMEOUT_SEC = 90.0
-REGISTRY_DISPLAY_INTERVAL_SEC = 30.0
+# Must exceed worker heartbeat interval (default 15s) so brief jitter does not orphan tasks.
+HEARTBEAT_TIMEOUT_SEC = 60.0
+REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
 
 
 def _shard_bounds(idx: int) -> Tuple[int, int]:

@@ -55,19 +55,20 @@ def train_shard_batch_loop(
     resume_next_index: int,
     device: torch.device,
     max_steps: int,
+    local_epochs: int = 1,
     batch_size: int = 64,
     lr: float = 1e-3,
     verbose: bool = False,
     log_prefix: str = "",
 ) -> Tuple[bytes, int, int, bool, float | None, float | None, float | None]:
     """
-    Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute 0..10k).
-    FL has no global epoch: we log local mini-batch steps and shard-wide eval accuracy.
+    Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute 0..10k),
+    repeating the slice for ``local_epochs`` passes (local epochs).
     Returns (weights_bytes, last_consumed_index, batches_run, shard_complete, last_loss, running_train_acc, shard_eval_acc).
     """
     resume_next_index = max(image_start, min(resume_next_index, image_end - 1))
-    idx_map = list(range(resume_next_index, image_end))
-    if not idx_map:
+    idx_map_base = list(range(resume_next_index, image_end))
+    if not idx_map_base:
         buf = io.BytesIO()
         torch.save(model.state_dict(), buf)
         return buf.getvalue(), image_end - 1, 0, True
@@ -80,37 +81,44 @@ def train_shard_batch_loop(
     last_consumed = resume_next_index - 1
     running_correct = 0
     running_total = 0
-    planned_batches = (len(idx_map) + batch_size - 1) // batch_size
+    planned_batches_per_epoch = (len(idx_map_base) + batch_size - 1) // batch_size
+    planned_total_batches = planned_batches_per_epoch * max(1, int(local_epochs))
     if verbose:
         print(
             f"{log_prefix} slice [{resume_next_index},{image_end})  "
-            f"batches_this_call≤{min(max_steps, planned_batches)}/{planned_batches} (batch_size={batch_size})",
+            f"local_epochs={int(local_epochs)}  "
+            f"batches_this_call≤{min(max_steps, planned_total_batches)}/{planned_total_batches} (batch_size={batch_size})",
             flush=True,
         )
 
-    for i in range(0, len(idx_map), batch_size):
+    for ep in range(max(1, int(local_epochs))):
+        if verbose:
+            print(f"{log_prefix}  epoch {ep + 1}/{int(local_epochs)}", flush=True)
+        for i in range(0, len(idx_map_base), batch_size):
+            if steps_run >= max_steps:
+                break
+            chunk = idx_map_base[i : i + batch_size]
+            xs = torch.stack([base_10k[j][0] for j in chunk]).to(device)
+            ys = torch.stack([torch.tensor(base_10k[j][1], device=device) for j in chunk])
+            optimizer.zero_grad()
+            loss = criterion(model(xs), ys)
+            loss.backward()
+            optimizer.step()
+            steps_run += 1
+            last_consumed = chunk[-1]
+            with torch.no_grad():
+                pred = model(xs).argmax(dim=1)
+                running_correct += int((pred == ys).sum().item())
+                running_total += len(chunk)
+            if verbose:
+                ra = 100.0 * running_correct / max(1, running_total)
+                print(
+                    f"{log_prefix}  step {steps_run}/{min(max_steps, planned_total_batches)}  "
+                    f"loss={loss.item():.4f}  running_train_acc={ra:.2f}%",
+                    flush=True,
+                )
         if steps_run >= max_steps:
             break
-        chunk = idx_map[i : i + batch_size]
-        xs = torch.stack([base_10k[j][0] for j in chunk]).to(device)
-        ys = torch.stack([torch.tensor(base_10k[j][1], device=device) for j in chunk])
-        optimizer.zero_grad()
-        loss = criterion(model(xs), ys)
-        loss.backward()
-        optimizer.step()
-        steps_run += 1
-        last_consumed = chunk[-1]
-        with torch.no_grad():
-            pred = model(xs).argmax(dim=1)
-            running_correct += int((pred == ys).sum().item())
-            running_total += len(chunk)
-        if verbose:
-            ra = 100.0 * running_correct / max(1, running_total)
-            print(
-                f"{log_prefix}  step {steps_run}/{min(max_steps, planned_batches)}  "
-                f"loss={loss.item():.4f}  running_train_acc={ra:.2f}%",
-                flush=True,
-            )
 
     shard_complete = last_consumed >= (image_end - 1)
     last_loss = float(loss.item()) if "loss" in locals() else None
