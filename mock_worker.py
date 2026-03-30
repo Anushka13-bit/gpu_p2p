@@ -110,6 +110,11 @@ def main() -> None:
             tr = client.request_task(worker_id)
             if not tr.has_task or tr.task is None:
                 idle_spins += 1
+                # Demo-friendly: if the tracker has stopped scheduling, exit quickly and stop heartbeats.
+                if idle_spins >= 5:
+                    print("no tasks available; exiting (tracker likely stopped scheduling).", flush=True)
+                    stop.set()
+                    return
                 time.sleep(2)
                 continue
             idle_spins = 0
@@ -200,6 +205,12 @@ def main() -> None:
                 if "aggregation" in resp:
                     print(f"*** {resp['aggregation']}", flush=True)
                     fed_rounds_completed += 1
+
+                # Clean exit when tracker indicates training is finished.
+                if resp.get("training_stopped"):
+                    print(f"tracker stopped scheduling ({resp.get('stop_reason')}); exiting cleanly.", flush=True)
+                    stop.set()
+                    return
 
                 if done:
                     if args.max_fed_rounds > 0 and fed_rounds_completed >= args.max_fed_rounds:
