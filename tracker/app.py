@@ -16,6 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
+from shared.env_load import load_dotenv_if_present
 from shared.protocol import (
     HealthResponse,
     HeartbeatRequest,
@@ -31,6 +32,7 @@ from shared.protocol import (
 from .scheduler import REGISTRY_DISPLAY_INTERVAL_SEC, WATCHDOG_CHECK_INTERVAL_SEC, Scheduler
 from .state_manager import StateManager
 
+load_dotenv_if_present()
 state_manager = StateManager()
 scheduler = Scheduler(state_manager)
 

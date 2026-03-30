@@ -16,6 +16,8 @@ from typing import Any
 
 import requests
 
+from shared.env_load import load_dotenv_if_present
+
 
 def _pct(last_index: int, start: int, end: int) -> float:
     denom = max(1, end - start)
@@ -25,6 +27,7 @@ def _pct(last_index: int, start: int, end: int) -> float:
 
 
 def main() -> int:
+    load_dotenv_if_present()
     ap = argparse.ArgumentParser()
     ap.add_argument("--tracker", default="http://127.0.0.1:8000")
     ap.add_argument("--every", type=float, default=30.0, help="Seconds between prints.")

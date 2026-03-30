@@ -9,6 +9,7 @@ from typing import Any, Mapping, Optional
 
 import requests
 
+from shared.env_load import load_dotenv_if_present
 from shared.hardware_sniff import sniff_register_tuple
 from shared.protocol import (
     HeartbeatRequest,
@@ -36,6 +37,7 @@ def encode_task_for_container(task: TaskResponse) -> str:
 
 class TrackerClient:
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+        load_dotenv_if_present()
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
