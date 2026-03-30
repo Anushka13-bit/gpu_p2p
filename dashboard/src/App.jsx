@@ -8,32 +8,31 @@ import {
   AccuracyChart,
   ActiveNodesChart,
   TaskStatusChart,
-  RoundsChart,
   ShardProgressChart,
 } from './components/Charts';
-import { fmtAcc, fmtPct } from './utils/fmt';
+import { fmtAcc } from './utils/fmt';
 
 /* ── Inline SVG icons ──────────────────────────────────────────────────────── */
 const Icon = {
-  cpu:     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/></svg>,
-  nodes:   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h10M17 6l-2 6M17 18l-2-6"/></svg>,
-  task:    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>,
-  round:   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>,
-  brain:   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9.5 2a5.5 5.5 0 015.5 5.5c0 .177-.009.352-.025.525A4.5 4.5 0 0119 12.5v.5a5 5 0 01-5 5H10a5 5 0 01-5-5v-.5a4.5 4.5 0 014.025-4.475A5.5 5.5 0 019.5 2Z"/></svg>,
-  chart:   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
-  history: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
-  workers: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
-  shard:   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
-  stop:    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>,
-  offline: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.39M10.71 5.05A16 16 0 0122.56 9M1.42 9a15.91 15.91 0 014.7-2.88M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg>,
+  cpu: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2" /></svg>,
+  nodes: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="5" cy="12" r="2" /><circle cx="19" cy="5" r="2" /><circle cx="19" cy="19" r="2" /><path d="M7 12h10M17 6l-2 6M17 18l-2-6" /></svg>,
+  task: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>,
+  round: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>,
+  brain: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9.5 2a5.5 5.5 0 015.5 5.5c0 .177-.009.352-.025.525A4.5 4.5 0 0119 12.5v.5a5 5 0 01-5 5H10a5 5 0 01-5-5v-.5a4.5 4.5 0 014.025-4.475A5.5 5.5 0 019.5 2Z" /></svg>,
+  chart: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>,
+  history: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
+  workers: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" /></svg>,
+  shard: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>,
+  stop: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>,
+  offline: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23" /><path d="M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.39M10.71 5.05A16 16 0 0122.56 9M1.42 9a15.91 15.91 0 014.7-2.88M8.53 16.11a6 6 0 016.95 0M12 20h.01" /></svg>,
 };
 
 /* ── Connection status badge ───────────────────────────────────────────────── */
 function ConnectionBadge({ status, lastUpdated }) {
   const map = {
-    online:     { color: '#10b981', label: 'Tracker Online',     pulse: true  },
-    offline:    { color: '#ef4444', label: 'Tracker Offline',    pulse: false },
-    connecting: { color: '#6366f1', label: 'Connecting…',        pulse: true  },
+    online: { color: '#10b981', label: 'Tracker Online', pulse: true },
+    offline: { color: '#ef4444', label: 'Tracker Offline', pulse: false },
+    connecting: { color: '#6366f1', label: 'Connecting…', pulse: true },
   };
   const { color, label, pulse } = map[status] ?? map.connecting;
   return (
@@ -124,18 +123,14 @@ export default function App() {
   const online = connectionStatus === 'online' && snapshot != null;
 
   // Derived values — all null/0 when offline; real values from snapshot when online
-  const taskTable       = online ? snapshot.taskTable       : {};
-  const nodes           = online ? snapshot.nodes           : [];
-  const nodeRegistry    = online ? snapshot.nodeRegistry    : {};
-  const stopPolicy      = online ? snapshot.stop_policy     : {};
+  const taskTable = online ? snapshot.taskTable : {};
+  const nodes = online ? snapshot.nodes : [];
+  const nodeRegistry = online ? snapshot.nodeRegistry : {};
+  const stopPolicy = online ? snapshot.stop_policy : {};
 
-  const totalShards     = Object.keys(taskTable).length;
-  const completedCount  = Object.values(taskTable).filter(t => t.status === 'COMPLETED').length;
+  const totalShards = Object.keys(taskTable).length;
+  const completedCount = Object.values(taskTable).filter(t => t.status === 'COMPLETED').length;
   const inProgressCount = Object.values(taskTable).filter(t => t.status === 'IN_PROGRESS').length;
-  // Average progress across all shards (uses real progress_pct from registry_snapshot)
-  const overallPct      = totalShards > 0
-    ? Object.values(taskTable).reduce((s, t) => s + (t.progress_pct ?? 0), 0) / totalShards
-    : null;
 
   return (
     <div className="app-root">
@@ -144,7 +139,7 @@ export default function App() {
         <div className="sidebar-logo">
           <div className="logo-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
             </svg>
           </div>
           <div>
@@ -155,11 +150,11 @@ export default function App() {
 
         <nav className="sidebar-nav">
           {[
-            { icon: Icon.chart,   label: 'Overview' },
-            { icon: Icon.brain,   label: 'Training'  },
-            { icon: Icon.shard,   label: 'Shards'    },
-            { icon: Icon.workers, label: 'Workers'   },
-            { icon: Icon.history, label: 'History'   },
+            { icon: Icon.chart, label: 'Overview' },
+            { icon: Icon.brain, label: 'Training' },
+            { icon: Icon.shard, label: 'Shards' },
+            { icon: Icon.workers, label: 'Workers' },
+            { icon: Icon.history, label: 'History' },
           ].map(({ icon, label }) => (
             <a key={label} className="nav-item" href="#" data-active={label === 'Overview'}>
               {icon}
@@ -303,18 +298,16 @@ export default function App() {
           </div>
 
           {/* ── Charts row 2: Active Nodes ── */}
-          <div className="charts-row two-col">
-            <SectionCard
-              title="Active Nodes over Time"
-              subtitle="Workers with heartbeat within timeout window"
-              icon={Icon.nodes}
-              accent="#3b82f6"
-            >
-              {online && metricHistory.length > 0
-                ? <ActiveNodesChart data={metricHistory} />
-                : <OfflinePlaceholder />}
-            </SectionCard>
-          </div>
+          <SectionCard
+            title="Active Nodes over Time"
+            subtitle="Workers with heartbeat within timeout window"
+            icon={Icon.nodes}
+            accent="#3b82f6"
+          >
+            {online && metricHistory.length > 0
+              ? <ActiveNodesChart data={metricHistory} />
+              : <OfflinePlaceholder />}
+          </SectionCard>
 
           {/* ── Shard progress bar chart ── */}
           <SectionCard
@@ -391,16 +384,16 @@ export default function App() {
                 <tbody>
                   {metricHistory.length > 0
                     ? [...metricHistory].reverse().slice(0, 20).map((row, i) => (
-                        <tr key={i} style={{ opacity: Math.max(0.45, 1 - i * 0.035) }}>
-                          <td className="mono">{row.label}</td>
-                          <td className="mono">v{row.round_no}</td>
-                          <td style={{ color: '#6366f1' }}>{fmtAcc(row.val_acc)}</td>
-                          <td style={{ color: '#10b981' }}>{fmtAcc(row.test_acc)}</td>
-                          <td>{row.active_nodes}</td>
-                          <td style={{ color: '#10b981' }}>{row.completed}</td>
-                          <td style={{ color: '#3b82f6' }}>{row.in_progress}</td>
-                        </tr>
-                      ))
+                      <tr key={i} style={{ opacity: Math.max(0.45, 1 - i * 0.035) }}>
+                        <td className="mono">{row.label}</td>
+                        <td className="mono">v{row.round_no}</td>
+                        <td style={{ color: '#6366f1' }}>{fmtAcc(row.val_acc)}</td>
+                        <td style={{ color: '#10b981' }}>{fmtAcc(row.test_acc)}</td>
+                        <td>{row.active_nodes}</td>
+                        <td style={{ color: '#10b981' }}>{row.completed}</td>
+                        <td style={{ color: '#3b82f6' }}>{row.in_progress}</td>
+                      </tr>
+                    ))
                     : <SkeletonRows />}
                 </tbody>
               </table>
