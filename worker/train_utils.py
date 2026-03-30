@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import io
+import os
+from pathlib import Path
 from typing import Tuple
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Subset
+from torch.utils.data import Subset, TensorDataset
 from torchvision import transforms
 from torchvision.datasets import FashionMNIST, MNIST
+import numpy as np
 
 
 @torch.no_grad()
@@ -45,17 +48,35 @@ def build_dataset_base_10k(dataset: str = "fashion_mnist", root: str = "./data")
     Download/load a torchvision dataset and return the first 10k train samples as a Subset.
 
     Supported:
-    - fashion_mnist (default)
-    - mnist
+    - fashion_mnist_csv (reads from local CSV in `archive 2/` by default)
+    - fashion_mnist (download via torchvision)
+    - mnist (download via torchvision)
     """
     ds = (dataset or "").strip().lower().replace("-", "_")
     tfm = transforms.ToTensor()
+    if ds in ("fashion_mnist_csv", "fashion_csv", "fmnist_csv"):
+        base = Path(os.environ.get("FASHION_MNIST_CSV_DIR", "archive 2")).resolve()
+        train_csv = base / "fashion-mnist_train.csv"
+        if not train_csv.exists():
+            raise FileNotFoundError(
+                f"expected Fashion-MNIST CSV at {train_csv}. "
+                "Set FASHION_MNIST_CSV_DIR or place files under `archive 2/`."
+            )
+        # CSV format: label,pixel0,pixel1,...,pixel783
+        # Load first 10k rows only to keep memory bounded.
+        raw = np.loadtxt(str(train_csv), delimiter=",", skiprows=1, max_rows=10_000, dtype=np.float32)
+        ys = torch.from_numpy(raw[:, 0].astype(np.int64))
+        xs = torch.from_numpy(raw[:, 1:]).reshape(-1, 1, 28, 28) / 255.0
+        ds_t = TensorDataset(xs, ys)
+        return Subset(ds_t, list(range(min(10_000, len(ds_t)))))
     if ds in ("fashion_mnist", "fashionmnist", "fmnist"):
         raw = FashionMNIST(root=root, train=True, download=True, transform=tfm)
     elif ds in ("mnist",):
         raw = MNIST(root=root, train=True, download=True, transform=tfm)
     else:
-        raise ValueError(f"unknown dataset={dataset!r} (supported: fashion_mnist, mnist)")
+        raise ValueError(
+            f"unknown dataset={dataset!r} (supported: fashion_mnist_csv, fashion_mnist, mnist)"
+        )
     n = min(10_000, len(raw))
     return Subset(raw, list(range(n)))
 

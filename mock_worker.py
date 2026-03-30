@@ -38,8 +38,8 @@ def main() -> None:
     parser.add_argument("--tracker", default="http://127.0.0.1:8000")
     parser.add_argument(
         "--dataset",
-        default="fashion_mnist",
-        help="Dataset to train on (fashion_mnist, mnist).",
+        default="fashion_mnist_csv",
+        help="Dataset to train on (fashion_mnist_csv, fashion_mnist, mnist).",
     )
     # One shard is 2000 samples; at batch_size=64 that's ~32 batches/epoch.
     # For 15 epochs, you want >= 480 batches; default gives a bit of slack.
