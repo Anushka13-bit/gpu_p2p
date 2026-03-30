@@ -89,7 +89,9 @@ class Scheduler:
         self._lock = RLock()
         self._workers: Dict[str, WorkerRecord] = {}
         self._tasks: Dict[str, TaskShard] = {}
-        self._max_fed_rounds = max(0, _env_int("GPU_P2P_MAX_FED_ROUNDS", 0))
+        # Demo-friendly default: run a single FedAvg round then stop.
+        # Override with GPU_P2P_MAX_FED_ROUNDS=0 for unlimited rounds.
+        self._max_fed_rounds = max(0, _env_int("GPU_P2P_MAX_FED_ROUNDS", 1))
         self._earlystop_patience = max(0, _env_int("GPU_P2P_EARLYSTOP_PATIENCE", 3))
         self._earlystop_min_delta = max(0.0, _env_float("GPU_P2P_EARLYSTOP_MIN_DELTA", 0.1))
         self._training_stopped = False
