@@ -121,6 +121,20 @@ class LogEvent(BaseModel):
     ts: float = Field(..., description="Unix timestamp seconds from worker.")
 
 
+class ProgressEvent(BaseModel):
+    """Fine-grained progress updates (e.g., per local epoch) for tracker UI/terminal."""
+
+    worker_id: str
+    host_label: Optional[str] = None
+    task_id: str
+    local_epoch: int = Field(..., ge=1, description="1-indexed local epoch number completed.")
+    local_epochs_total: int = Field(..., ge=1, description="Total local epochs planned for this training window.")
+    shard_progress_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    train_acc_running: Optional[float] = Field(default=None, ge=0, le=100)
+    train_loss_last: Optional[float] = None
+    ts: float = Field(..., description="Unix timestamp seconds from worker.")
+
+
 class AggregationBroadcast(BaseModel):
     round_no: int
     completed_tasks: int

@@ -22,6 +22,7 @@ from shared.protocol import (
     HeartbeatRequest,
     HeartbeatResponse,
     LogEvent,
+    ProgressEvent,
     RegisterRequest,
     RegisterResponse,
     SubmitWeightsMetadata,
@@ -195,6 +196,7 @@ async def submit_weights(
 
     broadcast: dict[str, Any] | None = None
     if msg.startswith("aggregated"):
+        hs = scheduler.health_snapshot()
         broadcast = {
             "round_no": state_manager.global_round(),
             "version": state_manager.global_version_label(),
@@ -236,6 +238,8 @@ async def global_model() -> JSONResponse:
             "version_label": state_manager.global_version_label(),
             "weights_b64": base64.b64encode(raw).decode("ascii"),
             "checkpoint_dir": state_manager.checkpoint_dir(),
+            "last_val_acc": snap.get("last_val_acc"),
+            "last_test_acc": snap.get("last_test_acc"),
         }
     )
 
@@ -252,6 +256,21 @@ async def log_event(
     task = body.task_id or "—"
     print(f"[workerlog] {body.level} host={host} worker={wid}… task={task}: {body.message}", flush=True)
     return JSONResponse({"ok": True, "count": _LOG_COUNTS[key]})
+
+
+@app.post("/progress")
+async def progress_event(body: ProgressEvent) -> JSONResponse:
+    scheduler.update_progress(
+        worker_id=body.worker_id,
+        task_id=body.task_id,
+        local_epoch=body.local_epoch,
+        local_epochs_total=body.local_epochs_total,
+        shard_progress_pct=body.shard_progress_pct,
+        train_acc_running=body.train_acc_running,
+        train_loss_last=body.train_loss_last,
+        ts=body.ts,
+    )
+    return JSONResponse({"ok": True})
 
 
 @app.get("/checkpoint/{task_id}")

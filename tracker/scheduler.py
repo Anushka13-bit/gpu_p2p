@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from shared.protocol import TaskAssignment, TaskResponse, TaskStatus
 
 from .aggregator import fedavg_state_dicts
+from .eval_utils import eval_global_fashion_mnist_test_acc, eval_global_fashion_mnist_val_acc
 from .state_manager import StateManager
 
 
@@ -22,6 +24,26 @@ SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
 HEARTBEAT_TIMEOUT_SEC = 12.0
 REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
 WATCHDOG_CHECK_INTERVAL_SEC = 3.0
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _shard_bounds(idx: int) -> Tuple[int, int]:
@@ -67,11 +89,60 @@ class Scheduler:
         self._lock = RLock()
         self._workers: Dict[str, WorkerRecord] = {}
         self._tasks: Dict[str, TaskShard] = {}
+        self._max_fed_rounds = max(0, _env_int("GPU_P2P_MAX_FED_ROUNDS", 0))
+        self._earlystop_patience = max(0, _env_int("GPU_P2P_EARLYSTOP_PATIENCE", 3))
+        self._earlystop_min_delta = max(0.0, _env_float("GPU_P2P_EARLYSTOP_MIN_DELTA", 0.1))
+        self._training_stopped = False
+        self._stop_reason: Optional[str] = None
+        self._best_val_acc: Optional[float] = None
+        self._rounds_without_improve = 0
+        # Latest per-worker per-task live progress (sent per epoch).
+        self._progress: Dict[tuple[str, str], dict[str, Any]] = {}
         for i in range(NUM_SHARDS):
             tid = f"shard-{i}"
             s, e = _shard_bounds(i)
             self._tasks[tid] = TaskShard(task_id=tid, image_start=s, image_end=e)
             self._state.ensure_task_slot(tid)
+        print(
+            "[scheduler] stop policy: "
+            f"max_fed_rounds={self._max_fed_rounds or 'unlimited'} "
+            f"earlystop_patience={self._earlystop_patience or 'disabled'} "
+            f"earlystop_min_delta={self._earlystop_min_delta:.4f}",
+            flush=True,
+        )
+
+    def _stop_training_locked(self, reason: str) -> None:
+        if self._training_stopped:
+            return
+        self._training_stopped = True
+        self._stop_reason = reason
+        print(f"[training] stop requested: {reason}", flush=True)
+
+    def is_training_stopped(self) -> bool:
+        with self._lock:
+            return self._training_stopped
+
+    def update_progress(
+        self,
+        worker_id: str,
+        task_id: str,
+        local_epoch: int,
+        local_epochs_total: int,
+        shard_progress_pct: Optional[float],
+        train_acc_running: Optional[float],
+        train_loss_last: Optional[float],
+        ts: float,
+    ) -> None:
+        """Called by /progress endpoint; used for live tracker registry rendering."""
+        with self._lock:
+            self._progress[(worker_id, task_id)] = {
+                "local_epoch": int(local_epoch),
+                "local_epochs_total": int(local_epochs_total),
+                "shard_progress_pct": float(shard_progress_pct) if shard_progress_pct is not None else None,
+                "train_acc_running": float(train_acc_running) if train_acc_running is not None else None,
+                "train_loss_last": float(train_loss_last) if train_loss_last is not None else None,
+                "ts": float(ts),
+            }
 
     def check_timeouts(self, now: Optional[float] = None) -> List[str]:
         now = now or time.time()
@@ -155,6 +226,9 @@ class Scheduler:
             if worker_id not in self._workers:
                 return TaskResponse(has_task=False, task=None, global_model_bytes_b64=None)
 
+            if self._training_stopped:
+                return TaskResponse(has_task=False, task=None, global_model_bytes_b64=None)
+
             existing = self._worker_active_task(worker_id)
             if existing:
                 return self._build_task_response_locked(existing, existing.status)
@@ -170,6 +244,8 @@ class Scheduler:
             return self._build_task_response_locked(picked, prior_status)
 
     def _build_task_response_locked(self, t: TaskShard, prior_status: TaskStatus) -> TaskResponse:
+        # Ensure all workers start from the same initial global model in round 1.
+        self._state.ensure_initial_global()
         last_idx = self._state.get_task_resume_index(t.task_id)
         resume_next = _resume_next_index(t.image_start, t.image_end, last_idx)
         starting = self._state.get_weights_for_assignment(t.task_id, prior_status)
@@ -238,19 +314,65 @@ class Scheduler:
         nbuf = len(buffers)
         merged = fedavg_state_dicts(buffers)
         next_round = self._state.global_round() + 1
-        self._state.set_global_bytes(merged, next_round)
+        val_acc: Optional[float] = None
+        test_acc: Optional[float] = None
+        try:
+            val_acc = float(eval_global_fashion_mnist_val_acc(merged, device="cpu"))
+            test_acc = float(eval_global_fashion_mnist_test_acc(merged, device="cpu"))
+        except Exception as e:
+            print(f"[eval] failed: {e!r}", flush=True)
+        self._state.set_global_bytes(merged, next_round, val_acc=val_acc, test_acc=test_acc)
 
-        for t in self._tasks.values():
-            t.status = TaskStatus.PENDING
-            t.assigned_worker = None
-            t.last_reported_index = -1
-        self._state.reset_task_checkpoints(list(self._tasks.keys()))
+        completed_rounds = max(0, next_round - 1)
+        # Early-stop is based on validation accuracy, not test accuracy.
+        if val_acc is not None:
+            if self._best_val_acc is None:
+                self._best_val_acc = val_acc
+                self._rounds_without_improve = 0
+            else:
+                improvement = val_acc - self._best_val_acc
+                if improvement >= self._earlystop_min_delta:
+                    self._best_val_acc = val_acc
+                    self._rounds_without_improve = 0
+                else:
+                    self._rounds_without_improve += 1
+
+        if self._max_fed_rounds > 0 and completed_rounds >= self._max_fed_rounds:
+            self._stop_training_locked(
+                f"max_fed_rounds reached ({completed_rounds}/{self._max_fed_rounds})"
+            )
+
+        if (
+            (not self._training_stopped)
+            and self._earlystop_patience > 0
+            and val_acc is not None
+            and self._best_val_acc is not None
+            and self._rounds_without_improve >= self._earlystop_patience
+        ):
+            self._stop_training_locked(
+                "early-stop: no meaningful global val_acc improvement "
+                f"for {self._rounds_without_improve} rounds "
+                f"(min_delta={self._earlystop_min_delta:.4f})"
+            )
+
+        if not self._training_stopped:
+            for t in self._tasks.values():
+                t.status = TaskStatus.PENDING
+                t.assigned_worker = None
+                t.last_reported_index = -1
+            self._state.reset_task_checkpoints(list(self._tasks.keys()))
 
         label = self._state.global_version_label()
         print(
             f"[fedavg] averaged {nbuf} shard weight tensors (element-wise mean of float params) → {label}",
             flush=True,
         )
+        if val_acc is not None or test_acc is not None:
+            vs = f"{val_acc:.2f}%" if val_acc is not None else "n/a"
+            ts = f"{test_acc:.2f}%" if test_acc is not None else "n/a"
+            print(f"[eval] {label} fashion-mnist val_acc={vs}  test_acc={ts}", flush=True)
+        if self._training_stopped and self._stop_reason:
+            print(f"[training] terminal condition met; no further tasks will be scheduled ({self._stop_reason})", flush=True)
         return True, f"aggregated to {label}"
 
     def worker_current_shard(self, worker_id: str) -> Optional[str]:
@@ -307,6 +429,7 @@ class Scheduler:
                     active += 1
                 shard = self._current_shard_locked(w.worker_id)
                 shard_prog = task_prog.get(shard) if shard else None
+                live = self._progress.get((w.worker_id, shard)) if shard else None
                 rows.append(
                     {
                         "worker_id": w.worker_id,
@@ -319,6 +442,11 @@ class Scheduler:
                         "current_shard_last_index": shard_prog.get("last_index") if shard_prog else None,
                         "current_shard_eval_acc": shard_prog.get("eval_acc") if shard_prog else None,
                         "current_shard_epochs": shard_prog.get("epochs") if shard_prog else None,
+                        "live_epoch": live.get("local_epoch") if live else None,
+                        "live_epoch_total": live.get("local_epochs_total") if live else None,
+                        "live_progress_pct": live.get("shard_progress_pct") if live else None,
+                        "live_train_acc": live.get("train_acc_running") if live else None,
+                        "live_ts_age_sec": round(now - live.get("ts"), 1) if live and live.get("ts") else None,
                     }
                 )
             rows.sort(key=lambda r: r["registered_at"])
@@ -328,6 +456,15 @@ class Scheduler:
                 "active_nodes": active,
                 "nodes_on_shard": on_task,
                 "heartbeat_timeout_sec": HEARTBEAT_TIMEOUT_SEC,
+                "training_stopped": self._training_stopped,
+                "stop_reason": self._stop_reason,
+                "best_val_acc": self._best_val_acc,
+                "rounds_without_improve": self._rounds_without_improve,
+                "stop_policy": {
+                    "max_fed_rounds": self._max_fed_rounds,
+                    "earlystop_patience": self._earlystop_patience,
+                    "earlystop_min_delta": self._earlystop_min_delta,
+                },
                 "nodes": rows,
                 "task_table": task_prog,
             }
@@ -341,19 +478,41 @@ class Scheduler:
             f"nodes_with_assigned_shard={snap['nodes_on_shard']}",
             f"  data: {TOTAL_IMAGES} MNIST indices → {NUM_SHARDS} shards × {SHARD_SIZE} rows (distinct workers take distinct pending shards)",
         ]
+        stop_state = "STOPPED" if snap.get("training_stopped") else "running"
+        lines.append(
+            "  training="
+            f"{stop_state} "
+            f"policy(max_rounds={snap.get('stop_policy', {}).get('max_fed_rounds', 0) or 'unlimited'}, "
+            f"patience={snap.get('stop_policy', {}).get('earlystop_patience', 0) or 'disabled'}, "
+            f"min_delta={snap.get('stop_policy', {}).get('earlystop_min_delta', 0.0):.4f})"
+        )
+        if snap.get("best_val_acc") is not None:
+            lines.append(
+                f"  best_val_acc={snap['best_val_acc']:.2f}%  rounds_without_improve={snap.get('rounds_without_improve', 0)}"
+            )
+        if snap.get("training_stopped") and snap.get("stop_reason"):
+            lines.append(f"  stop_reason={snap['stop_reason']}")
         for r in snap["nodes"]:
             shard = r["current_shard"] or "—"
             lbl = repr(r["host_label"])[1:-1] if r["host_label"] else "—"
             alive = "alive" if r["alive"] else "STALE"
             short_id = r["worker_id"][:8]
-            prog = r["current_shard_progress_pct"]
+            # Prefer live per-epoch progress if available; else fall back to submit-based progress.
+            live_pct = r.get("live_progress_pct")
+            prog = live_pct if isinstance(live_pct, (int, float)) else r["current_shard_progress_pct"]
             prog_s = f"{prog:.1f}%" if isinstance(prog, (int, float)) else "—"
             ep_s = r.get("current_shard_epochs") or "—"
-            acc = r.get("current_shard_eval_acc")
-            acc_s = f"{acc:.1f}%" if isinstance(acc, (int, float)) else "—"
+
+            # Epoch live "bar" removed (still tracked internally).
+            live_ep = r.get("live_epoch")
+            live_total = r.get("live_epoch_total")
+            if isinstance(live_ep, int) and isinstance(live_total, int) and live_total > 0:
+                ep_live_s = f"{live_ep}/{live_total}"
+            else:
+                ep_live_s = "—"
             lines.append(
                 f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  "
-                f"shard={shard}  progress={prog_s}  epochs={ep_s}  acc={acc_s}"
+                f"shard={shard}  progress={prog_s}  epochs={ep_live_s}"
             )
         lines.append("  shard summary:")
         for tid, info in snap["task_table"].items():
@@ -402,6 +561,15 @@ class Scheduler:
                 "workers": len(self._workers),
                 "worker_roster": roster,
                 "node_registry": reg,
+                "training_stopped": self._training_stopped,
+                "stop_reason": self._stop_reason,
+                "best_val_acc": self._best_val_acc,
+                "rounds_without_improve": self._rounds_without_improve,
+                "stop_policy": {
+                    "max_fed_rounds": self._max_fed_rounds,
+                    "earlystop_patience": self._earlystop_patience,
+                    "earlystop_min_delta": self._earlystop_min_delta,
+                },
                 "task_table": tasks,
                 **base,
             }
