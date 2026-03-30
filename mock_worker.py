@@ -192,7 +192,7 @@ def main() -> None:
                 client.log_event(
                     worker_id,
                     f"submit task={assign.task_id} last_index={last_idx} steps={batches} done={done} "
-                    f"loss={last_loss} train_acc={run_acc} eval_acc={eval_acc}",
+                    "checkpoint uploaded",
                     task_id=assign.task_id,
                     host_label=args.host_label,
                 )
