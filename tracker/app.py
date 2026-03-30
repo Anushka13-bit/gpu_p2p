@@ -141,13 +141,13 @@ async def submit_weights(
             "best_test_acc": hs.get("best_test_acc"),
         }
 
-    # Print per-worker training metrics on the tracker terminal.
-    if meta.train_loss_last is not None or meta.train_acc_running is not None or meta.shard_eval_acc is not None:
+    # Do not print shard (train-split) accuracy on the tracker; global evaluation is printed after FedAvg.
+    if meta.train_loss_last is not None or meta.train_acc_running is not None:
         print(
             f"[metrics] worker={meta.worker_id[:8]}… task={meta.task_id} "
             f"last_index={meta.last_index} steps={meta.steps_completed} done={meta.shard_complete} "
             f"epochs={meta.local_epochs_completed}/{meta.local_epochs_planned} "
-            f"loss={meta.train_loss_last} train_acc={meta.train_acc_running} eval_acc={meta.shard_eval_acc}",
+            f"loss={meta.train_loss_last} train_acc={meta.train_acc_running}",
             flush=True,
         )
 

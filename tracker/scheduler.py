@@ -486,8 +486,6 @@ class Scheduler:
             prog = live_pct if isinstance(live_pct, (int, float)) else r["current_shard_progress_pct"]
             prog_s = f"{prog:.1f}%" if isinstance(prog, (int, float)) else "—"
             ep_s = r.get("current_shard_epochs") or "—"
-            acc = r.get("current_shard_eval_acc")
-            acc_s = f"{acc:.1f}%" if isinstance(acc, (int, float)) else "—"
 
             # Epoch live "bar" removed (still tracked internally).
             live_ep = r.get("live_epoch")
@@ -498,7 +496,7 @@ class Scheduler:
                 ep_live_s = "—"
             lines.append(
                 f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  "
-                f"shard={shard}  progress={prog_s}  epochs={ep_live_s}  acc={acc_s}"
+                f"shard={shard}  progress={prog_s}  epochs={ep_live_s}"
             )
         lines.append("  shard summary:")
         for tid, info in snap["task_table"].items():
