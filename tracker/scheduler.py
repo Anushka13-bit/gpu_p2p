@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import os
 import time
-import uuid
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any, Dict, List, Optional, Tuple
@@ -163,17 +162,19 @@ class Scheduler:
 
     def register_worker(
         self,
+        worker_id: str,
         gpu_vram_mb: float,
         cpu_count: int,
         host_label: Optional[str],
         hardware_report: Optional[dict[str, Any]] = None,
     ) -> str:
         self.check_timeouts()
-        wid = str(uuid.uuid4())
         with self._lock:
             now = time.time()
-            self._workers[wid] = WorkerRecord(
-                worker_id=wid,
+            if worker_id in self._workers:
+                raise ValueError("worker_id already registered")
+            self._workers[worker_id] = WorkerRecord(
+                worker_id=worker_id,
                 gpu_vram_mb=gpu_vram_mb,
                 cpu_count=cpu_count,
                 host_label=host_label,
@@ -181,7 +182,7 @@ class Scheduler:
                 registered_at=now,
                 last_seen=now,
             )
-        return wid
+        return worker_id
 
     def touch_heartbeat(self, worker_id: str, task_id: Optional[str]) -> bool:
         self.check_timeouts()

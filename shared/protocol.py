@@ -17,6 +17,8 @@ class TaskStatus(str, Enum):
 
 
 class RegisterRequest(BaseModel):
+    worker_id: str
+    password: str
     gpu_vram_mb: float = Field(..., ge=0, description="Total GPU VRAM in MB (0 if CPU-only mock)")
     cpu_count: int = Field(..., ge=1)
     host_label: Optional[str] = None
@@ -28,11 +30,13 @@ class RegisterRequest(BaseModel):
 
 class RegisterResponse(BaseModel):
     worker_id: str
+    ticket: str
     message: str
 
 
 class HeartbeatRequest(BaseModel):
     worker_id: str
+    ticket: str
     task_id: Optional[str] = None
 
 
@@ -65,6 +69,7 @@ class TaskResponse(BaseModel):
 
 class SubmitWeightsMetadata(BaseModel):
     worker_id: str
+    ticket: str
     task_id: str
     last_index: int = Field(..., ge=-1, description="Last consumed index within [image_start, image_end).")
     steps_completed: int = Field(default=0, ge=0)
@@ -85,6 +90,7 @@ class SubmitWeightsMetadata(BaseModel):
 
 class LogEvent(BaseModel):
     worker_id: str
+    ticket: str
     host_label: Optional[str] = None
     task_id: Optional[str] = None
     level: str = Field(default="INFO")
@@ -96,6 +102,7 @@ class ProgressEvent(BaseModel):
     """Fine-grained progress updates (e.g., per local epoch) for tracker UI/terminal."""
 
     worker_id: str
+    ticket: str
     host_label: Optional[str] = None
     task_id: str
     local_epoch: int = Field(..., ge=1, description="1-indexed local epoch number completed.")

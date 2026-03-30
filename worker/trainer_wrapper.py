@@ -4,6 +4,7 @@ Entrypoint intended to run **inside** the training container.
 Environment:
   TRACKER_URL    — e.g. http://host.docker.internal:8000
   WORKER_ID      — UUID from /register
+  WORKER_TICKET  — HMAC ticket from /register
   TASK_JSON      — JSON {\"assignment\": {...}, \"weights_b64\": \"...\"}
   STEPS_PER_ROUND — defaults to 50
   MNIST_ROOT     — defaults to /app/data
@@ -37,6 +38,7 @@ class ContainerTaskPayload(BaseModel):
 def main() -> None:
     tracker_url = os.environ["TRACKER_URL"]
     worker_id = os.environ["WORKER_ID"]
+    worker_ticket = os.environ.get("WORKER_TICKET")
     task_raw = os.environ["TASK_JSON"]
     steps = int(os.environ.get("STEPS_PER_ROUND", "50"))
     mnist_root = os.environ.get("MNIST_ROOT", "/app/data")
@@ -51,6 +53,8 @@ def main() -> None:
     assign = payload.assignment
     base = build_mnist_base_10k(mnist_root)
     client = TrackerClient(tracker_url)
+    if worker_ticket:
+        client.ticket = worker_ticket
     resume_next = assign.resume_next_index
 
     while True:

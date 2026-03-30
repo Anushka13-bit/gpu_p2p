@@ -39,15 +39,20 @@ class TrackerClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
+        self.ticket: str | None = None
 
     def register(
         self,
+        worker_id: str,
         gpu_vram_mb: float,
         cpu_count: int,
         host_label: str | None = None,
         hardware_report: Mapping[str, Any] | None = None,
+        password: str | None = None,
     ) -> RegisterResponse:
         body = RegisterRequest(
+            worker_id=worker_id,
+            password=password or os.getenv("JOIN_PASSWORD", "Antigravity-2026"),
             gpu_vram_mb=gpu_vram_mb,
             cpu_count=cpu_count,
             host_label=host_label,
@@ -59,10 +64,14 @@ class TrackerClient:
             timeout=self.timeout,
         )
         r.raise_for_status()
-        return RegisterResponse.model_validate(r.json())
+        resp = RegisterResponse.model_validate(r.json())
+        self.ticket = resp.ticket
+        return resp
 
     def heartbeat(self, worker_id: str, task_id: str | None = None) -> bool:
-        body = HeartbeatRequest(worker_id=worker_id, task_id=task_id)
+        if not self.ticket:
+            raise RuntimeError("worker ticket not set; call register() first")
+        body = HeartbeatRequest(worker_id=worker_id, ticket=self.ticket, task_id=task_id)
         r = self.session.post(
             f"{self.base_url}/heartbeat",
             json=body.model_dump(),
@@ -74,7 +83,13 @@ class TrackerClient:
         return bool(r.json().get("ok"))
 
     def request_task(self, worker_id: str) -> TaskResponse:
-        r = self.session.get(f"{self.base_url}/task/{worker_id}", timeout=self.timeout)
+        if not self.ticket:
+            raise RuntimeError("worker ticket not set; call register() first")
+        r = self.session.get(
+            f"{self.base_url}/task/{worker_id}",
+            params={"ticket": self.ticket},
+            timeout=self.timeout,
+        )
         r.raise_for_status()
         return TaskResponse.model_validate(r.json())
 
@@ -98,8 +113,11 @@ class TrackerClient:
         local_epochs_planned: int | None = None,
         local_epochs_completed: int | None = None,
     ) -> dict[str, Any]:
+        if not self.ticket:
+            raise RuntimeError("worker ticket not set; call register() first")
         meta = SubmitWeightsMetadata(
             worker_id=worker_id,
+            ticket=self.ticket,
             task_id=task_id,
             last_index=last_index,
             steps_completed=steps_completed,
@@ -125,7 +143,17 @@ class TrackerClient:
         return r.json()
 
     def log_event(self, worker_id: str, message: str, level: str = "INFO", task_id: str | None = None, host_label: str | None = None) -> None:
-        body = LogEvent(worker_id=worker_id, host_label=host_label, task_id=task_id, level=level, message=message, ts=time.time())
+        if not self.ticket:
+            return
+        body = LogEvent(
+            worker_id=worker_id,
+            ticket=self.ticket,
+            host_label=host_label,
+            task_id=task_id,
+            level=level,
+            message=message,
+            ts=time.time(),
+        )
         r = self.session.post(f"{self.base_url}/log", json=body.model_dump(), timeout=self.timeout)
         if not r.ok:
             # Best-effort; don't crash training if logging fails.
@@ -142,8 +170,11 @@ class TrackerClient:
         train_acc_running: float | None = None,
         train_loss_last: float | None = None,
     ) -> None:
+        if not self.ticket:
+            return
         body = ProgressEvent(
             worker_id=worker_id,
+            ticket=self.ticket,
             host_label=host_label,
             task_id=task_id,
             local_epoch=local_epoch,

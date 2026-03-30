@@ -12,7 +12,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from shared.protocol import (
@@ -28,6 +28,7 @@ from shared.protocol import (
 )
 
 from .scheduler import REGISTRY_DISPLAY_INTERVAL_SEC, WATCHDOG_CHECK_INTERVAL_SEC, Scheduler
+from .security import JOIN_PASSWORD, create_ticket, is_valid_worker
 from .state_manager import StateManager
 
 state_manager = StateManager()
@@ -73,14 +74,25 @@ app = FastAPI(title="GPU Tracker", lifespan=lifespan)
 _LOG_COUNTS: dict[str, int] = {}
 
 
+def _require_valid_ticket(worker_id: str, ticket: str) -> None:
+    if not is_valid_worker(worker_id, ticket):
+        raise HTTPException(status_code=401, detail="invalid worker ticket")
+
+
 @app.post("/register", response_model=RegisterResponse)
 async def register(body: RegisterRequest) -> RegisterResponse:
-    wid = scheduler.register_worker(
-        gpu_vram_mb=body.gpu_vram_mb,
-        cpu_count=body.cpu_count,
-        host_label=body.host_label,
-        hardware_report=body.hardware_report,
-    )
+    if body.password != JOIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="invalid join password")
+    try:
+        wid = scheduler.register_worker(
+            worker_id=body.worker_id,
+            gpu_vram_mb=body.gpu_vram_mb,
+            cpu_count=body.cpu_count,
+            host_label=body.host_label,
+            hardware_report=body.hardware_report,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     print(
         f"[register] worker_id={wid} gpu_vram_mb={body.gpu_vram_mb} "
         f"cpu_count={body.cpu_count} host_label={body.host_label!r}",
@@ -88,11 +100,12 @@ async def register(body: RegisterRequest) -> RegisterResponse:
     )
     if body.hardware_report:
         print(json.dumps(body.hardware_report, indent=2, default=str), flush=True)
-    return RegisterResponse(worker_id=wid, message="registered")
+    return RegisterResponse(worker_id=wid, ticket=create_ticket(wid), message="registered")
 
 
 @app.post("/heartbeat", response_model=HeartbeatResponse)
 async def heartbeat(body: HeartbeatRequest) -> HeartbeatResponse:
+    _require_valid_ticket(body.worker_id, body.ticket)
     ok = scheduler.touch_heartbeat(body.worker_id, body.task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="unknown worker")
@@ -100,7 +113,8 @@ async def heartbeat(body: HeartbeatRequest) -> HeartbeatResponse:
 
 
 @app.get("/task/{worker_id}", response_model=TaskResponse)
-async def get_task(worker_id: str) -> TaskResponse:
+async def get_task(worker_id: str, ticket: str = Query(...)) -> TaskResponse:
+    _require_valid_ticket(worker_id, ticket)
     return scheduler.request_task(worker_id)
 
 
@@ -113,6 +127,7 @@ async def submit_weights(
         meta = SubmitWeightsMetadata.model_validate_json(meta_json)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"invalid metadata: {e}") from e
+    _require_valid_ticket(meta.worker_id, meta.ticket)
 
     weights_bytes = await weights_file.read()
     if not weights_bytes:
@@ -193,6 +208,7 @@ async def global_model() -> JSONResponse:
 
 @app.post("/log")
 async def log_event(body: LogEvent) -> JSONResponse:
+    _require_valid_ticket(body.worker_id, body.ticket)
     key = body.worker_id
     _LOG_COUNTS[key] = _LOG_COUNTS.get(key, 0) + 1
     wid = body.worker_id[:8]
@@ -204,6 +220,7 @@ async def log_event(body: LogEvent) -> JSONResponse:
 
 @app.post("/progress")
 async def progress_event(body: ProgressEvent) -> JSONResponse:
+    _require_valid_ticket(body.worker_id, body.ticket)
     scheduler.update_progress(
         worker_id=body.worker_id,
         task_id=body.task_id,

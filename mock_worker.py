@@ -23,6 +23,7 @@ import argparse
 import base64
 import threading
 import time
+import uuid
 from typing import Optional
 
 import torch
@@ -74,7 +75,9 @@ def main() -> None:
 
     client = TrackerClient(args.tracker)
     vram, cpus = sniff_hardware_defaults()
+    worker_id = f"node-{uuid.uuid4().hex[:12]}"
     reg = client.register(
+        worker_id=worker_id,
         gpu_vram_mb=vram,
         cpu_count=cpus,
         host_label=args.host_label,

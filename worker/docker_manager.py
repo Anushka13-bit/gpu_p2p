@@ -16,6 +16,7 @@ def run_training_container(
     image: str,
     tracker_url: str,
     worker_id: str,
+    worker_ticket: str | None,
     task_env: Dict[str, str],
     volumes: Optional[Dict[str, Dict[str, str]]] = None,
     gpus: str = "all",
@@ -24,7 +25,7 @@ def run_training_container(
 ) -> docker.models.containers.Container:
     """
     ``task_env`` should include serialized task JSON under key ``TASK_JSON`` or
-    pass keys expected by ``trainer_wrapper.py`` (TRACKER_URL, WORKER_ID, TASK_JSON).
+    pass keys expected by ``trainer_wrapper.py`` (TRACKER_URL, WORKER_ID, WORKER_TICKET, TASK_JSON).
 
     ``volumes`` example for dev: {"/abs/path/project": {"bind": "/app", "mode": "rw"}}
     """
@@ -35,6 +36,8 @@ def run_training_container(
         "PYTHONPATH": "/app",
         **task_env,
     }
+    if worker_ticket:
+        env["WORKER_TICKET"] = worker_ticket
     run_kw: Dict[str, Any] = dict(
         image=image,
         command=["python", "-u", "-m", "worker.trainer_wrapper"],
