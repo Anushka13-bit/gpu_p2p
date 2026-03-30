@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import time
 from typing import Any, Mapping, Optional
 
@@ -38,6 +39,9 @@ class TrackerClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
+        key = os.environ.get("GPU_P2P_AUTH_KEY")
+        if key:
+            self.session.headers.update({"X-Auth-Key": key})
 
     def register(
         self,

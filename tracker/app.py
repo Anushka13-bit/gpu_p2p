@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 from shared.protocol import (
@@ -31,6 +33,8 @@ from .state_manager import StateManager
 
 state_manager = StateManager()
 scheduler = Scheduler(state_manager)
+
+_AUTH_KEY = os.environ.get("GPU_P2P_AUTH_KEY")
 
 
 @asynccontextmanager
@@ -70,6 +74,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="GPU Tracker", lifespan=lifespan)
 
 _LOG_COUNTS: dict[str, int] = {}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """
+    Optional shared-secret auth (no DB).
+
+    If env var GPU_P2P_AUTH_KEY is set on the tracker, every request must include header:
+      X-Auth-Key: <same value>
+    """
+    if _AUTH_KEY:
+        got = request.headers.get("x-auth-key")
+        if got != _AUTH_KEY:
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 @app.post("/register", response_model=RegisterResponse)

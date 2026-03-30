@@ -10,6 +10,7 @@ Run (on the tracker host, or anywhere that can reach it):
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from typing import Any
 
@@ -31,6 +32,9 @@ def main() -> int:
 
     base = args.tracker.rstrip("/")
     s = requests.Session()
+    key = os.environ.get("GPU_P2P_AUTH_KEY")
+    if key:
+        s.headers.update({"X-Auth-Key": key})
 
     while True:
         try:
