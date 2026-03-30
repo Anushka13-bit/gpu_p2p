@@ -27,7 +27,7 @@ from shared.models import SmallCNN, apply_state_dict
 from shared.protocol import TaskAssignment
 
 from worker.client import TrackerClient
-from worker.train_utils import build_mnist_base_10k, train_shard_batch_loop
+from worker.train_utils import build_dataset_base, train_shard_batch_loop
 
 
 class ContainerTaskPayload(BaseModel):
@@ -51,7 +51,8 @@ def main() -> None:
         apply_state_dict(model, base64.b64decode(payload.weights_b64), map_location=str(device))
 
     assign = payload.assignment
-    base = build_mnist_base_10k(mnist_root)
+    dataset = os.environ.get("DATASET", "fashion_mnist")
+    base = build_dataset_base(dataset=dataset, root=mnist_root)
     client = TrackerClient(tracker_url)
     if worker_ticket:
         client.ticket = worker_ticket

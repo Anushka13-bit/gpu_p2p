@@ -1,4 +1,4 @@
-"""Training steps on a contiguous dataset shard (first 10k samples of a dataset)."""
+"""Training steps on a contiguous dataset shard (a contiguous slice of a dataset)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Callable, Tuple
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Subset, TensorDataset
+from torch.utils.data import ConcatDataset, Dataset, Subset, TensorDataset
 from torchvision import transforms
 from torchvision.datasets import FashionMNIST, MNIST
 import numpy as np
@@ -18,7 +18,7 @@ import numpy as np
 @torch.no_grad()
 def eval_accuracy_on_range(
     model: nn.Module,
-    base_10k: Subset,
+    base: Dataset,
     image_start: int,
     image_end: int,
     device: torch.device,
@@ -34,8 +34,8 @@ def eval_accuracy_on_range(
     total = 0
     for i in range(0, len(indices), batch_size):
         chunk = indices[i : i + batch_size]
-        xs = torch.stack([base_10k[j][0] for j in chunk]).to(device)
-        ys = torch.stack([torch.tensor(base_10k[j][1], device=device) for j in chunk])
+        xs = torch.stack([base[j][0] for j in chunk]).to(device)
+        ys = torch.stack([torch.tensor(base[j][1], device=device) for j in chunk])
         pred = model(xs).argmax(dim=1)
         correct += int((pred == ys).sum().item())
         total += len(chunk)
@@ -43,13 +43,13 @@ def eval_accuracy_on_range(
     return 100.0 * correct / max(1, total)
 
 
-def build_dataset_base_10k(dataset: str = "fashion_mnist", root: str = "./data") -> Subset:
+def build_dataset_base(dataset: str = "fashion_mnist", root: str = "./data") -> Dataset:
     """
-    Download/load a torchvision dataset and return the first 10k train samples as a Subset.
+    Download/load a dataset and return an indexable Dataset.
 
     Supported:
     - fashion_mnist_csv (reads from local CSV in `archive 2/` by default)
-    - fashion_mnist (download via torchvision)
+    - fashion_mnist (train+test concatenated → 70,000 samples)
     - mnist (download via torchvision)
     """
     ds = (dataset or "").strip().lower().replace("-", "_")
@@ -63,27 +63,29 @@ def build_dataset_base_10k(dataset: str = "fashion_mnist", root: str = "./data")
                 "Set FASHION_MNIST_CSV_DIR or place files under `archive 2/`."
             )
         # CSV format: label,pixel0,pixel1,...,pixel783
-        # Load first 10k rows only to keep memory bounded.
-        raw = np.loadtxt(str(train_csv), delimiter=",", skiprows=1, max_rows=10_000, dtype=np.float32)
+        # Load all rows from the CSV (typically 60k for Fashion-MNIST train CSV).
+        raw = np.loadtxt(str(train_csv), delimiter=",", skiprows=1, dtype=np.float32)
         ys = torch.from_numpy(raw[:, 0].astype(np.int64))
         xs = torch.from_numpy(raw[:, 1:]).reshape(-1, 1, 28, 28) / 255.0
         ds_t = TensorDataset(xs, ys)
-        return Subset(ds_t, list(range(min(10_000, len(ds_t)))))
+        return ds_t
     if ds in ("fashion_mnist", "fashionmnist", "fmnist"):
-        raw = FashionMNIST(root=root, train=True, download=True, transform=tfm)
+        train = FashionMNIST(root=root, train=True, download=True, transform=tfm)
+        test = FashionMNIST(root=root, train=False, download=True, transform=tfm)
+        return ConcatDataset([train, test])
     elif ds in ("mnist",):
-        raw = MNIST(root=root, train=True, download=True, transform=tfm)
+        train = MNIST(root=root, train=True, download=True, transform=tfm)
+        test = MNIST(root=root, train=False, download=True, transform=tfm)
+        return ConcatDataset([train, test])
     else:
         raise ValueError(
             f"unknown dataset={dataset!r} (supported: fashion_mnist_csv, fashion_mnist, mnist)"
         )
-    n = min(10_000, len(raw))
-    return Subset(raw, list(range(n)))
 
 
 def train_shard_batch_loop(
     model: nn.Module,
-    base_10k: Subset,
+    base: Dataset,
     image_start: int,
     image_end: int,
     resume_next_index: int,
@@ -98,7 +100,7 @@ def train_shard_batch_loop(
     on_epoch_end: Callable[[int, int, float | None, float | None, int], None] | None = None,
 ) -> Tuple[bytes, int, int, bool, float | None, float | None, float | None, int, int]:
     """
-    Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute 0..10k),
+    Train up to ``max_steps`` batches on indices ``[resume_next_index, image_end)`` (absolute dataset indices),
     repeating the slice for ``local_epochs`` passes (local epochs).
     Returns (
       weights_bytes, last_consumed_index, batches_run, shard_complete,
@@ -140,8 +142,8 @@ def train_shard_batch_loop(
             if steps_run >= max_steps:
                 break
             chunk = idx_map_base[i : i + batch_size]
-            xs = torch.stack([base_10k[j][0] for j in chunk]).to(device)
-            ys = torch.stack([torch.tensor(base_10k[j][1], device=device) for j in chunk])
+            xs = torch.stack([base[j][0] for j in chunk]).to(device)
+            ys = torch.stack([torch.tensor(base[j][1], device=device) for j in chunk])
             optimizer.zero_grad()
             loss = criterion(model(xs), ys)
             loss.backward()
@@ -173,7 +175,7 @@ def train_shard_batch_loop(
     running_train_acc = 100.0 * running_correct / max(1, running_total) if running_total else None
     shard_eval_acc = None
     if verbose:
-        acc = eval_accuracy_on_range(model, base_10k, image_start, image_end, device)
+        acc = eval_accuracy_on_range(model, base, image_start, image_end, device)
         shard_eval_acc = float(acc)
         print(
             f"{log_prefix} shard eval [{image_start},{image_end}): {acc:.2f}%  "
@@ -182,7 +184,7 @@ def train_shard_batch_loop(
         )
     else:
         # Even if quiet, still compute once per submit so tracker can display it.
-        shard_eval_acc = float(eval_accuracy_on_range(model, base_10k, image_start, image_end, device))
+        shard_eval_acc = float(eval_accuracy_on_range(model, base, image_start, image_end, device))
     out = io.BytesIO()
     torch.save(model.state_dict(), out)
     return (

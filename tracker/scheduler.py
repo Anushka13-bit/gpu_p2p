@@ -1,4 +1,4 @@
-"""Task table: 10_000 images → 5 shards; heartbeat watchdog; assignments."""
+"""Task table: dataset indices → shards; heartbeat watchdog; assignments."""
 
 from __future__ import annotations
 
@@ -15,11 +15,6 @@ from .aggregator import fedavg_state_dicts
 from .eval_utils import eval_global_fashion_mnist_test_acc, eval_global_fashion_mnist_val_acc
 from . import learning_credits
 from .state_manager import StateManager
-
-
-TOTAL_IMAGES = 10_000
-NUM_SHARDS = 5
-SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
 
 
 def _env_int(name: str, default: int) -> int:
@@ -42,6 +37,18 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+# We shard over a contiguous index range [0, TOTAL_IMAGES).
+# For Fashion-MNIST, users often want the full 70k (train 60k + test 10k).
+#
+# Override via env if you want different sizing:
+#   GPU_P2P_TOTAL_IMAGES=60000 GPU_P2P_NUM_SHARDS=12
+TOTAL_IMAGES = max(1, _env_int("GPU_P2P_TOTAL_IMAGES", 70_000))
+NUM_SHARDS = max(1, _env_int("GPU_P2P_NUM_SHARDS", 10))
+
+# Use ceil division so shards cover the entire [0, TOTAL_IMAGES) range.
+SHARD_SIZE = (TOTAL_IMAGES + NUM_SHARDS - 1) // NUM_SHARDS
+
+
 # If a shard assignee stops heartbeating, ORPHANED after this many seconds (then another worker
 # can pick it up). Must be > worker ``--heartbeat-sec`` (default 3); brief CPU/GIL stalls can
 # delay heartbeats — use a higher value via env on flaky hosts.
@@ -60,7 +67,7 @@ WATCHDOG_CHECK_INTERVAL_SEC = max(0.5, _env_float("GPU_P2P_WATCHDOG_INTERVAL_SEC
 
 def _shard_bounds(idx: int) -> Tuple[int, int]:
     start = idx * SHARD_SIZE
-    end = start + SHARD_SIZE
+    end = min(TOTAL_IMAGES, start + SHARD_SIZE)
     return start, end
 
 
