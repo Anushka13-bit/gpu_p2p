@@ -36,8 +36,6 @@ load_dotenv_if_present()
 state_manager = StateManager()
 scheduler = Scheduler(state_manager)
 
-_AUTH_KEY = os.environ.get("GPU_P2P_AUTH_KEY")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -86,9 +84,10 @@ async def auth_middleware(request: Request, call_next):
     If env var GPU_P2P_AUTH_KEY is set on the tracker, every request must include header:
       X-Auth-Key: <same value>
     """
-    if _AUTH_KEY:
+    expected = os.environ.get("GPU_P2P_AUTH_KEY")
+    if expected:
         got = request.headers.get("x-auth-key")
-        if got != _AUTH_KEY:
+        if got != expected:
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
     return await call_next(request)
 
