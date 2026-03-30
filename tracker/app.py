@@ -141,15 +141,8 @@ async def submit_weights(
             "best_test_acc": hs.get("best_test_acc"),
         }
 
-    # Do not print shard (train-split) accuracy on the tracker; global evaluation is printed after FedAvg.
-    if meta.train_loss_last is not None or meta.train_acc_running is not None:
-        print(
-            f"[metrics] worker={meta.worker_id[:8]}… task={meta.task_id} "
-            f"last_index={meta.last_index} steps={meta.steps_completed} done={meta.shard_complete} "
-            f"epochs={meta.local_epochs_completed}/{meta.local_epochs_planned} "
-            f"loss={meta.train_loss_last} train_acc={meta.train_acc_running}",
-            flush=True,
-        )
+    # Intentionally do not print any per-shard training metrics on the tracker.
+    # Only tracker-side global test accuracy (after FedAvg) is shown.
 
     hs = scheduler.health_snapshot()
     body: dict[str, Any] = {
