@@ -77,6 +77,12 @@ class TrackerClient:
         r.raise_for_status()
         return TaskResponse.model_validate(r.json())
 
+    def health(self) -> dict[str, Any]:
+        """Raw tracker /health JSON payload."""
+        r = self.session.get(f"{self.base_url}/health", timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
     def submit_weights(
         self,
         worker_id: str,

@@ -110,11 +110,20 @@ def main() -> None:
             tr = client.request_task(worker_id)
             if not tr.has_task or tr.task is None:
                 idle_spins += 1
-                # Demo-friendly: if the tracker has stopped scheduling, exit quickly and stop heartbeats.
-                if idle_spins >= 5:
-                    print("no tasks available; exiting (tracker likely stopped scheduling).", flush=True)
-                    stop.set()
-                    return
+                # Do not exit just because we're idle; only exit when the tracker confirms
+                # training has stopped (i.e., it received all required shards and ran FedAvg+eval).
+                try:
+                    hs = client.health().get("tasks", {})
+                    if hs.get("training_stopped"):
+                        print(
+                            f"tracker stopped scheduling ({hs.get('stop_reason')}); exiting cleanly.",
+                            flush=True,
+                        )
+                        stop.set()
+                        return
+                except Exception:
+                    # If /health fails temporarily, just keep polling.
+                    pass
                 time.sleep(2)
                 continue
             idle_spins = 0
