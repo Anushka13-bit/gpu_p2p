@@ -12,6 +12,14 @@ import torch
 from shared.models import SmallCNN, apply_state_dict
 
 
+def _default_archive2_dirs() -> list[Path]:
+    # Try repo-relative first, then a common macOS location.
+    return [
+        Path("archive 2"),
+        Path.home() / "Desktop" / "archive 2",
+    ]
+
+
 def _load_fashion_mnist_test_csv(max_rows: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Load Fashion-MNIST test split from local CSV.
@@ -20,12 +28,23 @@ def _load_fashion_mnist_test_csv(max_rows: Optional[int] = None) -> Tuple[torch.
     Override directory via env var `FASHION_MNIST_CSV_DIR`.
     CSV format: label,pixel0,...,pixel783
     """
-    base = Path(os.environ.get("FASHION_MNIST_CSV_DIR", "archive 2")).resolve()
-    test_csv = base / "fashion-mnist_test.csv"
-    if not test_csv.exists():
+    env = os.environ.get("FASHION_MNIST_CSV_DIR")
+    candidates: list[Path] = []
+    if env:
+        candidates.append(Path(env))
+    candidates.extend(_default_archive2_dirs())
+
+    test_csv: Optional[Path] = None
+    for base in candidates:
+        p = base.expanduser().resolve() / "fashion-mnist_test.csv"
+        if p.exists():
+            test_csv = p
+            break
+    if test_csv is None:
+        tried = ", ".join(str((c.expanduser().resolve() / "fashion-mnist_test.csv")) for c in candidates)
         raise FileNotFoundError(
-            f"expected Fashion-MNIST test CSV at {test_csv}. "
-            "Set FASHION_MNIST_CSV_DIR or place files under `archive 2/`."
+            "could not find Fashion-MNIST test CSV. Tried: "
+            f"{tried}. Set FASHION_MNIST_CSV_DIR or add `archive 2/` to the repo root."
         )
     raw = np.loadtxt(
         str(test_csv),

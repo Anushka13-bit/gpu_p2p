@@ -489,12 +489,11 @@ class Scheduler:
             acc = r.get("current_shard_eval_acc")
             acc_s = f"{acc:.1f}%" if isinstance(acc, (int, float)) else "—"
 
+            # Epoch live "bar" removed (still tracked internally).
             live_ep = r.get("live_epoch")
             live_total = r.get("live_epoch_total")
             if isinstance(live_ep, int) and isinstance(live_total, int) and live_total > 0:
-                filled = max(0, min(10, int(round(10 * (live_ep / live_total)))))
-                bar = "█" * filled + "░" * (10 - filled)
-                ep_live_s = f"{bar} {live_ep}/{live_total}"
+                ep_live_s = f"{live_ep}/{live_total}"
             else:
                 ep_live_s = "—"
             lines.append(
