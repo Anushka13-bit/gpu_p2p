@@ -87,6 +87,8 @@ class TrackerClient:
         train_loss_last: float | None = None,
         train_acc_running: float | None = None,
         shard_eval_acc: float | None = None,
+        local_epochs_planned: int | None = None,
+        local_epochs_completed: int | None = None,
     ) -> dict[str, Any]:
         meta = SubmitWeightsMetadata(
             worker_id=worker_id,
@@ -97,6 +99,8 @@ class TrackerClient:
             train_loss_last=train_loss_last,
             train_acc_running=train_acc_running,
             shard_eval_acc=shard_eval_acc,
+            local_epochs_planned=local_epochs_planned,
+            local_epochs_completed=local_epochs_completed,
         )
         files = {
             "weights_file": ("weights.pt", io.BytesIO(weights_bytes), "application/octet-stream"),

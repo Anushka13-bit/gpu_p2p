@@ -18,9 +18,10 @@ from .state_manager import StateManager
 TOTAL_IMAGES = 10_000
 NUM_SHARDS = 5
 SHARD_SIZE = TOTAL_IMAGES // NUM_SHARDS
-# Must exceed worker heartbeat interval (default 15s) so brief jitter does not orphan tasks.
-HEARTBEAT_TIMEOUT_SEC = 60.0
+# Must exceed worker heartbeat interval (default 3s) so brief jitter does not orphan tasks.
+HEARTBEAT_TIMEOUT_SEC = 12.0
 REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
+WATCHDOG_CHECK_INTERVAL_SEC = 3.0
 
 
 def _shard_bounds(idx: int) -> Tuple[int, int]:
@@ -44,6 +45,9 @@ class TaskShard:
     assigned_worker: Optional[str] = None
     last_heartbeat: float = 0.0
     last_reported_index: int = -1
+    last_eval_acc: Optional[float] = None
+    last_epochs_completed: Optional[int] = None
+    last_epochs_planned: Optional[int] = None
 
 
 @dataclass
@@ -179,6 +183,9 @@ class Scheduler:
         weights_bytes: bytes,
         last_index: int,
         shard_complete: bool,
+        shard_eval_acc: Optional[float] = None,
+        local_epochs_planned: Optional[int] = None,
+        local_epochs_completed: Optional[int] = None,
     ) -> Tuple[bool, str]:
         self.check_timeouts()
         with self._lock:
@@ -191,6 +198,12 @@ class Scheduler:
             t.status = TaskStatus.IN_PROGRESS
             t.last_heartbeat = time.time()
             t.last_reported_index = last_index
+            if shard_eval_acc is not None:
+                t.last_eval_acc = float(shard_eval_acc)
+            if local_epochs_planned is not None:
+                t.last_epochs_planned = int(local_epochs_planned)
+            if local_epochs_completed is not None:
+                t.last_epochs_completed = int(local_epochs_completed)
 
         self._state.update_task_checkpoint(task_id, weights_bytes, last_index)
 
@@ -268,6 +281,12 @@ class Scheduler:
                     "range": [t.image_start, t.image_end],
                     "last_index": t.last_reported_index,
                     "progress_pct": round(pct, 2),
+                    "eval_acc": t.last_eval_acc,
+                    "epochs": (
+                        f"{t.last_epochs_completed}/{t.last_epochs_planned}"
+                        if t.last_epochs_completed is not None and t.last_epochs_planned is not None
+                        else None
+                    ),
                 }
 
             rows: list[dict[str, Any]] = []
@@ -289,6 +308,8 @@ class Scheduler:
                         "current_shard": shard,
                         "current_shard_progress_pct": shard_prog.get("progress_pct") if shard_prog else None,
                         "current_shard_last_index": shard_prog.get("last_index") if shard_prog else None,
+                        "current_shard_eval_acc": shard_prog.get("eval_acc") if shard_prog else None,
+                        "current_shard_epochs": shard_prog.get("epochs") if shard_prog else None,
                     }
                 )
             rows.sort(key=lambda r: r["registered_at"])
@@ -318,8 +339,12 @@ class Scheduler:
             short_id = r["worker_id"][:8]
             prog = r["current_shard_progress_pct"]
             prog_s = f"{prog:.1f}%" if isinstance(prog, (int, float)) else "—"
+            ep_s = r.get("current_shard_epochs") or "—"
+            acc = r.get("current_shard_eval_acc")
+            acc_s = f"{acc:.1f}%" if isinstance(acc, (int, float)) else "—"
             lines.append(
-                f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  shard={shard}  shard_progress={prog_s}"
+                f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  "
+                f"shard={shard}  progress={prog_s}  epochs={ep_s}  acc={acc_s}"
             )
         lines.append("  shard summary:")
         for tid, info in snap["task_table"].items():

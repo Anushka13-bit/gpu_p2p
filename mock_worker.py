@@ -30,12 +30,17 @@ import torch
 from shared.hardware_sniff import hardware_report_for_register
 from shared.models import SmallCNN, apply_state_dict
 from worker.client import TrackerClient, sniff_hardware_defaults
-from worker.train_utils import build_mnist_base_10k, train_shard_batch_loop
+from worker.train_utils import build_dataset_base_10k, train_shard_batch_loop
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tracker", default="http://127.0.0.1:8000")
+    parser.add_argument(
+        "--dataset",
+        default="fashion_mnist",
+        help="Dataset to train on (fashion_mnist, mnist).",
+    )
     # One shard is 2000 samples; at batch_size=64 that's ~32 batches/epoch.
     # For 15 epochs, you want >= 480 batches; default gives a bit of slack.
     parser.add_argument("--steps", type=int, default=600)
@@ -48,7 +53,7 @@ def main() -> None:
     parser.add_argument(
         "--heartbeat-sec",
         type=float,
-        default=15.0,
+        default=3.0,
         help="POST /heartbeat interval while running (tracker timeout must be larger).",
     )
     parser.add_argument(
@@ -57,6 +62,7 @@ def main() -> None:
         help="Shown in tracker registry / register payload.",
     )
     parser.add_argument("--quiet-training", action="store_true", help="Less worker-side training log.")
+    parser.add_argument("--log-steps", action="store_true", help="Print per-mini-batch step logs (very verbose).")
     parser.add_argument("--die-after-first-round", action="store_true")
     parser.add_argument(
         "--max-fed-rounds",
@@ -78,7 +84,7 @@ def main() -> None:
     print(f"registered worker_id={worker_id}", flush=True)
     client.log_event(worker_id, f"registered gpu_vram_mb={vram} cpu_count={cpus}", host_label=args.host_label)
 
-    base = build_mnist_base_10k("./data")
+    base = build_dataset_base_10k(dataset=args.dataset, root="./data")
     device = torch.device("cpu")
     task_holder: dict[str, Optional[str]] = {"id": None}
     stop = threading.Event()
@@ -133,7 +139,17 @@ def main() -> None:
                     stop.set()
                     return
 
-                weights_bytes, last_idx, batches, done, last_loss, run_acc, eval_acc = train_shard_batch_loop(
+                (
+                    weights_bytes,
+                    last_idx,
+                    batches,
+                    done,
+                    last_loss,
+                    run_acc,
+                    eval_acc,
+                    ep_planned,
+                    ep_done,
+                ) = train_shard_batch_loop(
                     model,
                     base,
                     assign.image_start,
@@ -143,6 +159,7 @@ def main() -> None:
                     max_steps=args.steps,
                     local_epochs=args.local_epochs,
                     verbose=not args.quiet_training,
+                    log_steps=bool(args.log_steps),
                     log_prefix=log_prefix,
                 )
 
@@ -156,6 +173,8 @@ def main() -> None:
                     train_loss_last=last_loss,
                     train_acc_running=run_acc,
                     shard_eval_acc=eval_acc,
+                    local_epochs_planned=ep_planned,
+                    local_epochs_completed=ep_done,
                 )
                 print(f"submit: {resp}", flush=True)
                 client.log_event(

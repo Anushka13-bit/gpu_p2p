@@ -77,6 +77,10 @@ class SubmitWeightsMetadata(BaseModel):
     shard_eval_acc: Optional[float] = Field(
         default=None, description="Eval accuracy (%) over the whole shard after this submit window."
     )
+    local_epochs_planned: Optional[int] = Field(default=None, description="Local epochs planned for this submit window.")
+    local_epochs_completed: Optional[int] = Field(
+        default=None, description="Local epochs completed in this submit window (may be capped by steps)."
+    )
 
 
 class LogEvent(BaseModel):

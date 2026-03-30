@@ -25,7 +25,7 @@ from shared.protocol import (
     TaskResponse,
 )
 
-from .scheduler import REGISTRY_DISPLAY_INTERVAL_SEC, Scheduler
+from .scheduler import REGISTRY_DISPLAY_INTERVAL_SEC, WATCHDOG_CHECK_INTERVAL_SEC, Scheduler
 from .state_manager import StateManager
 
 state_manager = StateManager()
@@ -35,15 +35,19 @@ scheduler = Scheduler(state_manager)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async def _registry_supervisor():
+        last_print = 0.0
         while True:
-            await asyncio.sleep(REGISTRY_DISPLAY_INTERVAL_SEC)
+            await asyncio.sleep(WATCHDOG_CHECK_INTERVAL_SEC)
             orphaned = scheduler.check_timeouts()
             if orphaned:
                 print(
                     f"[watchdog] reassigned/orphaned (assigned shard had no heartbeat in time): {orphaned}",
                     flush=True,
                 )
-            print(scheduler.format_registry_terminal(), flush=True)
+            now = time.time()
+            if (now - last_print) >= REGISTRY_DISPLAY_INTERVAL_SEC:
+                print(scheduler.format_registry_terminal(now), flush=True)
+                last_print = now
 
     task = asyncio.create_task(_registry_supervisor())
     print(
@@ -51,7 +55,7 @@ async def lifespan(app: FastAPI):
         f"(see scheduler.HEARTBEAT_TIMEOUT_SEC for liveness window)",
         flush=True,
     )
-    print(scheduler.format_registry_terminal(), flush=True)
+    print(scheduler.format_registry_terminal(time.time()), flush=True)
     try:
         yield
     finally:
@@ -117,6 +121,9 @@ async def submit_weights(
         weights_bytes,
         meta.last_index,
         meta.shard_complete,
+        shard_eval_acc=meta.shard_eval_acc,
+        local_epochs_planned=meta.local_epochs_planned,
+        local_epochs_completed=meta.local_epochs_completed,
     )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
@@ -134,6 +141,7 @@ async def submit_weights(
         print(
             f"[metrics] worker={meta.worker_id[:8]}… task={meta.task_id} "
             f"last_index={meta.last_index} steps={meta.steps_completed} done={meta.shard_complete} "
+            f"epochs={meta.local_epochs_completed}/{meta.local_epochs_planned} "
             f"loss={meta.train_loss_last} train_acc={meta.train_acc_running} eval_acc={meta.shard_eval_acc}",
             flush=True,
         )

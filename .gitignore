@@ -29,6 +29,9 @@ checkpoints/
 *.pt
 *.pth
 
+# Local datasets / archives
+archive 2/
+
 # Env & secrets
 .env
 .env.*
