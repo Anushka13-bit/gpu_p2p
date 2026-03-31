@@ -59,14 +59,23 @@ def build_dataset_base(dataset: str = "fashion_mnist", root: str = "./data") -> 
     if ds in ("fashion_mnist_csv", "fashion_csv", "fmnist_csv"):
         base = Path(os.environ.get("FASHION_MNIST_CSV_DIR", "archive 2")).resolve()
         train_csv = base / "fashion-mnist_train.csv"
+        test_csv = base / "fashion-mnist_test.csv"
         if not train_csv.exists():
             raise FileNotFoundError(
                 f"expected Fashion-MNIST CSV at {train_csv}. "
                 "Set FASHION_MNIST_CSV_DIR or place files under `archive 2/`."
             )
+
         # CSV format: label,pixel0,pixel1,...,pixel783
-        # Load all rows from the CSV (typically 60k for Fashion-MNIST train CSV).
-        raw = np.loadtxt(str(train_csv), delimiter=",", skiprows=1, dtype=np.float32)
+        # Load train (60k) and append test (10k) when available, so total aligns
+        # with scheduler default TOTAL_IMAGES=70000.
+        raw_train = np.loadtxt(str(train_csv), delimiter=",", skiprows=1, dtype=np.float32)
+        raw_parts = [raw_train]
+        if test_csv.exists():
+            raw_test = np.loadtxt(str(test_csv), delimiter=",", skiprows=1, dtype=np.float32)
+            raw_parts.append(raw_test)
+        raw = np.concatenate(raw_parts, axis=0) if len(raw_parts) > 1 else raw_parts[0]
+
         ys = torch.from_numpy(raw[:, 0].astype(np.int64))
         xs = torch.from_numpy(raw[:, 1:]).reshape(-1, 1, 28, 28) / 255.0
         ds_t = TensorDataset(xs, ys)
