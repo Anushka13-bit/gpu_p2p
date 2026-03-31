@@ -65,6 +65,38 @@ REGISTRY_DISPLAY_INTERVAL_SEC = 15.0
 WATCHDOG_CHECK_INTERVAL_SEC = max(0.5, _env_float("GPU_P2P_WATCHDOG_INTERVAL_SEC", 1.0))
 
 
+# Resource gating for shard assignment (to prefer GPU-capable nodes).
+# Note: tracker only knows *reported* specs at registration time, not live "available/free VRAM".
+GPU_ONLY = _env_int("GPU_P2P_GPU_ONLY", 0) == 1
+MIN_VRAM_MB = max(0.0, float(_env_int("GPU_P2P_MIN_VRAM_MB", 1)))
+MIN_THREADS = max(1, _env_int("GPU_P2P_MIN_THREADS", 1))
+REQUIRE_CUDA_TORCH = _env_int("GPU_P2P_REQUIRE_CUDA_TORCH", 0) == 1
+
+
+def _worker_meets_resource_requirements(w: "WorkerRecord") -> bool:
+    """
+    Decide whether the tracker should even assign a shard to this worker.
+    Uses the worker's registration-time reported specs.
+    """
+    if not GPU_ONLY:
+        return True
+
+    if w.gpu_vram_mb < MIN_VRAM_MB:
+        return False
+
+    if w.cpu_count < MIN_THREADS:
+        return False
+
+    if REQUIRE_CUDA_TORCH:
+        # hardware_report comes from shared.hardware_sniff.build_hardware_report()
+        # and includes cuda_available based on torch.cuda.is_available().
+        hw = w.hardware_report or {}
+        if bool(hw.get("cuda_available")) is not True:
+            return False
+
+    return True
+
+
 def _shard_bounds(idx: int) -> Tuple[int, int]:
     start = idx * SHARD_SIZE
     end = min(TOTAL_IMAGES, start + SHARD_SIZE)
@@ -312,6 +344,9 @@ class Scheduler:
         if not candidates:
             return None
         wrec = self._workers.get(worker_id)
+        # If we know the worker doesn't satisfy resource gating, don't assign tasks at all.
+        if wrec and not _worker_meets_resource_requirements(wrec):
+            return None
         rep_val = wrec.reputation if wrec else 50.0
         high_trust = rep_val >= 50.0
         candidates.sort(

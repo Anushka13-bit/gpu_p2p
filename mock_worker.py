@@ -93,7 +93,8 @@ def main() -> None:
     client.log_event(worker_id, f"registered gpu_vram_mb={vram} cpu_count={cpus}", host_label=args.host_label)
 
     base = build_dataset_base(dataset=args.dataset, root="./data")
-    device = torch.device("cpu")
+    # Prefer GPU when available (CPU-only torch builds will still fall back to CPU).
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     task_holder: dict[str, Optional[str]] = {"id": None}
     stop = threading.Event()
 
