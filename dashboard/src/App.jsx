@@ -252,21 +252,21 @@ export default function App() {
               : <OfflinePlaceholder height={160} />}
           </SectionCard>
 
-          {/* ── Charts row 1: Task Status ── */}
+          {/* ── Charts row 1: Data Shard Progress ── */}
           <div className="charts-row two-col">
             <SectionCard
-              title="Task Status Distribution"
-              subtitle="Current breakdown of shard states from task_table"
-              icon={Icon.task}
-              accent="#10b981"
+              title="Data Shard Progress"
+              subtitle="One bar = 100% of dataset; segments fill as each worker eats its shard"
+              icon={Icon.shard}
+              accent="#ec4899"
             >
               {online && totalShards > 0
-                ? <TaskStatusChart taskTable={taskTable} />
-                : <OfflinePlaceholder />}
+                ? <DataShardBar taskTable={taskTable} />
+                : <OfflinePlaceholder height={220} />}
             </SectionCard>
           </div>
 
-          {/* ── Charts row 2: Active Nodes + Data Parallelism ── */}
+          {/* ── Charts row 2: Active Nodes + Task Status ── */}
           <div className="charts-row two-col">
             <SectionCard
               title="Active Nodes over Time"
@@ -280,14 +280,14 @@ export default function App() {
             </SectionCard>
 
             <SectionCard
-              title="Data Shard Progress"
-              subtitle="One bar = 100% of dataset; segments fill as each worker eats its shard"
-              icon={Icon.shard}
-              accent="#ec4899"
+              title="Task Status Distribution"
+              subtitle="Current breakdown of shard states from task_table"
+              icon={Icon.task}
+              accent="#10b981"
             >
               {online && totalShards > 0
-                ? <DataShardBar taskTable={taskTable} />
-                : <OfflinePlaceholder height={220} />}
+                ? <TaskStatusChart taskTable={taskTable} />
+                : <OfflinePlaceholder />}
             </SectionCard>
           </div>
 
