@@ -99,6 +99,32 @@ def nvidia_gputil_first_vram_mb() -> Optional[float]:
     return None
 
 
+def windows_generic_vram_mb() -> Optional[float]:
+    if platform.system() != "Windows":
+        return None
+    try:
+        p = subprocess.run(
+            ["wmic", "path", "win32_VideoController", "get", "AdapterRAM"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        )
+        if p.returncode != 0:
+            return None
+        lines = p.stdout.strip().split("\n")
+        vrams = []
+        for line in lines[1:]:
+            val = line.strip()
+            if val and val.isdigit():
+                vrams.append(float(val) / (1024 * 1024))
+        if vrams:
+            return max(vrams)  # Return the largest if multiple GPUs
+    except Exception:
+        pass
+    return None
+
+
 # Unified-memory heuristic: fraction of system RAM often usable as GPU working set on Apple Silicon.
 APPLE_UNIFIED_GPU_BUDGET_FRAC = 0.55
 
@@ -126,6 +152,7 @@ def build_hardware_report() -> HardwareReport:
     machine = platform.machine()
 
     nvidia = nvidia_gputil_first_vram_mb()
+    windows_generic = windows_generic_vram_mb()
     ram = darwin_physical_memory_mb() if sysname == "Darwin" else None
     apple_lines = darwin_gpu_chipset_lines() if sysname == "Darwin" else []
     brand = darwin_cpu_brand_string() if sysname == "Darwin" else None
@@ -147,6 +174,9 @@ def build_hardware_report() -> HardwareReport:
     if nvidia is not None:
         eff = nvidia
         note = "NVIDIA VRAM from GPUtil (discrete GPU memory)."
+    elif sysname == "Windows" and windows_generic is not None:
+        eff = max(windows_generic, 0.0)
+        note = f"Non-NVIDIA Windows GPU detected via WMIC: {eff:.1f} MB (likely AMD/Intel)."
     elif sysname == "Darwin" and (is_apple_silicon_cpu() or mps is True) and ram is not None:
         eff = round(ram * APPLE_UNIFIED_GPU_BUDGET_FRAC, 1)
         note = (

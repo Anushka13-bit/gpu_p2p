@@ -139,6 +139,15 @@ class WorkerRecord:
     positive_streak_rounds: int = 0
     credit_events_count: int = 0
 
+    @property
+    def compute_tier(self) -> str:
+        if self.gpu_vram_mb >= 8000:
+            return "Tier 1 (High-End GPU)"
+        elif self.gpu_vram_mb >= 2000:
+            return "Tier 2 (Standard GPU)"
+        else:
+            return "Tier 3 (Edge/CPU Fallback)"
+
 
 class Scheduler:
     def __init__(self, state: StateManager) -> None:
@@ -646,6 +655,7 @@ class Scheduler:
                         "worker_id": w.worker_id,
                         "host_label": w.host_label,
                         "registered_at": w.registered_at,
+                        "compute_tier": w.compute_tier,
                         "last_seen_age_sec": round(age, 1),
                         "alive": is_live,
                         "credits_total": round(w.credits_total, 4),
@@ -726,7 +736,7 @@ class Scheduler:
             else:
                 ep_live_s = "—"
             lines.append(
-                f"    [{alive}] {short_id}…  host={lbl}  last_seen={r['last_seen_age_sec']}s  "
+                f"    [{alive}] {short_id}…  host={lbl}  tier={r.get('compute_tier', 'Unknown')}  last_seen={r['last_seen_age_sec']}s  "
                 f"shard={shard}  progress={prog_s}  epochs={ep_live_s}"
             )
         lines.append("  shard summary:")
@@ -761,6 +771,7 @@ class Scheduler:
                     "gpu_vram_mb": w.gpu_vram_mb,
                     "cpu_count": w.cpu_count,
                     "host_label": w.host_label,
+                    "compute_tier": w.compute_tier,
                     "registered_at": w.registered_at,
                     "last_seen_age_sec": round(now - w.last_seen, 3),
                     "hardware_report": w.hardware_report,

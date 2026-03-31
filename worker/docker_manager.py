@@ -46,8 +46,13 @@ def run_training_container(
         remove=remove_on_exit,
         volumes=volumes or {},
     )
-    if gpus:
+    from shared.hardware_sniff import build_hardware_report
+    report = build_hardware_report()
+    
+    if gpus and report.nvidia_vram_mb is not None:
         run_kw["device_requests"] = [DeviceRequest(count=-1, capabilities=[["gpu"]])]
+    else:
+        env["FALLBACK_MODE"] = "1"
 
     container = client.containers.run(**run_kw)
     return container
