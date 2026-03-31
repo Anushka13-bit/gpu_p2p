@@ -85,13 +85,32 @@ class TrackerClient:
     def request_task(self, worker_id: str) -> TaskResponse:
         if not self.ticket:
             raise RuntimeError("worker ticket not set; call register() first")
-        r = self.session.get(
-            f"{self.base_url}/task/{worker_id}",
-            params={"ticket": self.ticket},
-            timeout=self.timeout,
-        )
-        r.raise_for_status()
-        return TaskResponse.model_validate(r.json())
+        
+        # Ngrok free tier and base64 payloads can cause ChunkedEncodingError on slow connections.
+        import requests.exceptions
+        import urllib3.exceptions
+        
+        for attempt in range(3):
+            try:
+                r = self.session.get(
+                    f"{self.base_url}/task/{worker_id}",
+                    params={"ticket": self.ticket},
+                    timeout=self.timeout + 30.0,  # Extra buffer for slow connections downloading base64
+                )
+                r.raise_for_status()
+                return TaskResponse.model_validate(r.json())
+            except (
+                requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                urllib3.exceptions.ProtocolError,
+                urllib3.exceptions.IncompleteRead
+            ) as e:
+                if attempt == 2:
+                    raise
+                print(f"Network error downloading task ({e}). Retrying {attempt+1}/3 in 2s...", flush=True)
+                import time
+                time.sleep(2)
 
     def health(self) -> dict[str, Any]:
         """Raw tracker /health JSON payload."""
