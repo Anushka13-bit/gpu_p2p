@@ -9,10 +9,18 @@ from typing import Callable, Tuple
 
 import torch
 import torch.nn as nn
-from torch.utils.data import ConcatDataset, Dataset, Subset, TensorDataset
+from torch.utils.data import ConcatDataset, Dataset, TensorDataset
 from torchvision import transforms
 from torchvision.datasets import FashionMNIST, MNIST
 import numpy as np
+
+
+def _fashion_mnist_csv_tensor_dataset(csv_path: Path) -> TensorDataset:
+    """Load one Fashion-MNIST CSV (label,pixel0,...,pixel783) into a TensorDataset."""
+    raw = np.loadtxt(str(csv_path), delimiter=",", skiprows=1, dtype=np.float32)
+    ys = torch.from_numpy(raw[:, 0].astype(np.int64))
+    xs = torch.from_numpy(raw[:, 1:]).reshape(-1, 1, 28, 28) / 255.0
+    return TensorDataset(xs, ys)
 
 
 @torch.no_grad()
@@ -50,36 +58,33 @@ def build_dataset_base(dataset: str = "fashion_mnist", root: str = "./data") -> 
     Download/load a dataset and return an indexable Dataset.
 
     Supported:
-    - fashion_mnist_csv (reads from local CSV in `archive 2/` by default)
+    - fashion_mnist_csv (train + test CSVs → 70,000 samples, matching tracker sharding)
     - fashion_mnist (train+test concatenated → 70,000 samples)
     - mnist (download via torchvision)
     """
     ds = (dataset or "").strip().lower().replace("-", "_")
     tfm = transforms.ToTensor()
     if ds in ("fashion_mnist_csv", "fashion_csv", "fmnist_csv"):
-        base = Path(os.environ.get("FASHION_MNIST_CSV_DIR", "archive 2")).resolve()
-        train_csv = base / "fashion-mnist_train.csv"
-        test_csv = base / "fashion-mnist_test.csv"
+        csv_dir = Path(os.environ.get("FASHION_MNIST_CSV_DIR", "archive 2")).resolve()
+        train_csv = csv_dir / "fashion-mnist_train.csv"
+        test_csv = csv_dir / "fashion-mnist_test.csv"
         if not train_csv.exists():
             raise FileNotFoundError(
                 f"expected Fashion-MNIST CSV at {train_csv}. "
                 "Set FASHION_MNIST_CSV_DIR or place files under `archive 2/`."
             )
-
-        # CSV format: label,pixel0,pixel1,...,pixel783
-        # Load train (60k) and append test (10k) when available, so total aligns
-        # with scheduler default TOTAL_IMAGES=70000.
-        raw_train = np.loadtxt(str(train_csv), delimiter=",", skiprows=1, dtype=np.float32)
-        raw_parts = [raw_train]
+        train_ds = _fashion_mnist_csv_tensor_dataset(train_csv)
         if test_csv.exists():
-            raw_test = np.loadtxt(str(test_csv), delimiter=",", skiprows=1, dtype=np.float32)
-            raw_parts.append(raw_test)
-        raw = np.concatenate(raw_parts, axis=0) if len(raw_parts) > 1 else raw_parts[0]
-
-        ys = torch.from_numpy(raw[:, 0].astype(np.int64))
-        xs = torch.from_numpy(raw[:, 1:]).reshape(-1, 1, 28, 28) / 255.0
-        ds_t = TensorDataset(xs, ys)
-        return ds_t
+            test_ds = _fashion_mnist_csv_tensor_dataset(test_csv)
+            return ConcatDataset([train_ds, test_ds])
+        if os.environ.get("FASHION_MNIST_CSV_TRAIN_ONLY", "").strip() in ("1", "true", "yes"):
+            return train_ds
+        raise FileNotFoundError(
+            f"Missing {test_csv}. The tracker shards 70,000 indices (60k train + 10k test). "
+            "Add Kaggle Fashion-MNIST `fashion-mnist_test.csv` beside the train file, set "
+            "FASHION_MNIST_CSV_TRAIN_ONLY=1 only if your tracker uses 60k indices, or use "
+            "`--dataset fashion_mnist` (torchvision download)."
+        )
     if ds in ("fashion_mnist", "fashionmnist", "fmnist"):
         train = FashionMNIST(root=root, train=True, download=True, transform=tfm)
         test = FashionMNIST(root=root, train=False, download=True, transform=tfm)
@@ -125,6 +130,16 @@ def train_shard_batch_loop(
     """
     resume_next_index = max(image_start, min(resume_next_index, image_end - 1))
     idx_map_base = list(range(resume_next_index, image_end))
+    try:
+        n_samples = len(base)  # type: ignore[arg-type]
+    except TypeError:
+        n_samples = None
+    if n_samples is not None and image_end > n_samples:
+        raise ValueError(
+            f"Shard [{image_start},{image_end}) needs indices up to {image_end - 1} but dataset "
+            f"length is {n_samples}. For Fashion-MNIST CSV workers, include `fashion-mnist_test.csv` "
+            f"(70k total) or use `--dataset fashion_mnist`."
+        ) from None
     if not idx_map_base:
         buf = io.BytesIO()
         torch.save(model.state_dict(), buf)
